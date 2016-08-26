@@ -141,7 +141,7 @@ def atrous_conv2d(value, filters, rate, padding, name=None):
     ValueError: If input/output depth does not match `filters`' shape, or if
       padding is other than `'VALID'` or `'SAME'`.
   """
-  with ops.op_scope([value, filters], name, "atrous_conv2d") as name:
+  with ops.name_scope(name, "atrous_conv2d", [value, filters]) as name:
     value = ops.convert_to_tensor(value, name="value")
     filters = ops.convert_to_tensor(filters, name="filters")
     if not value.get_shape()[3].is_compatible_with(filters.get_shape()[2]):
@@ -264,8 +264,8 @@ def conv2d_transpose(value,
     ValueError: If input/output depth does not match `filter`'s shape, or if
       padding is other than `'VALID'` or `'SAME'`.
   """
-  with ops.op_scope([value, filter, output_shape], name,
-                    "conv2d_transpose") as name:
+  with ops.name_scope(name, "conv2d_transpose",
+                      [value, filter, output_shape]) as name:
     value = ops.convert_to_tensor(value, name="value")
     filter = ops.convert_to_tensor(filter, name="filter")
     if not value.get_shape()[3].is_compatible_with(filter.get_shape()[3]):
@@ -331,8 +331,8 @@ def conv3d_transpose(value,
     ValueError: If input/output depth does not match `filter`'s shape, or if
       padding is other than `'VALID'` or `'SAME'`.
   """
-  with ops.op_scope([value, filter, output_shape], name,
-                    "conv3d_transpose") as name:
+  with ops.name_scope(name, "conv3d_transpose",
+                      [value, filter, output_shape]) as name:
     value = ops.convert_to_tensor(value, name="value")
     filter = ops.convert_to_tensor(filter, name="filter")
     if not value.get_shape()[4].is_compatible_with(filter.get_shape()[4]):
@@ -385,7 +385,7 @@ def bias_add(value, bias, data_format=None, name=None):
   Returns:
     A `Tensor` with the same type as `value`.
   """
-  with ops.op_scope([value, bias], name, "BiasAdd") as name:
+  with ops.name_scope(name, "BiasAdd", [value, bias]) as name:
     value = ops.convert_to_tensor(value, name="input")
     bias = ops.convert_to_tensor(bias, dtype=value.dtype, name="bias")
     return gen_nn_ops._bias_add(value, bias, data_format=data_format, name=name)
@@ -418,7 +418,7 @@ def bias_add_v1(value, bias, name=None):
   Returns:
     A `Tensor` with the same type as `value`.
   """
-  with ops.op_scope([value, bias], name, "BiasAddV1") as name:
+  with ops.name_scope(name, "BiasAddV1", [value, bias]) as name:
     value = ops.convert_to_tensor(value, name="input")
     bias = ops.convert_to_tensor(bias, dtype=value.dtype, name="bias")
     return gen_nn_ops._bias_add_v1(value, bias, name=name)
@@ -427,6 +427,28 @@ def bias_add_v1(value, bias, name=None):
 ops.RegisterShape("BiasAddV1")(common_shapes.bias_add_shape)
 
 ops.RegisterShape("BiasAddGradV1")(common_shapes.bias_add_grad_shape)
+
+
+def crelu(features, name=None):
+  """Computes Concatenated ReLU.
+
+  Concatenates a ReLU which selects only the positive part of the activation
+  with a ReLU which selects only the *negative* part of the activation.
+  Note that as a result this non-linearity doubles the depth of the activations.
+  Source: https://arxiv.org/abs/1603.05201
+
+  Args:
+    features: A `Tensor` with type `float`, `double`, `int32`, `int64`, `uint8`,
+      `int16`, or `int8`.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` with the same type as `features`.
+  """
+  with ops.name_scope(name, "CRelu", [features]) as name:
+    features = ops.convert_to_tensor(features, name="features")
+    return gen_nn_ops.relu(array_ops.concat(array_ops.rank(features) - 1,
+                                            [features, -features], name=name))
 
 
 def relu6(features, name=None):
@@ -440,7 +462,7 @@ def relu6(features, name=None):
   Returns:
     A `Tensor` with the same type as `features`.
   """
-  with ops.op_scope([features], name, "Relu6") as name:
+  with ops.name_scope(name, "Relu6", [features]) as name:
     features = ops.convert_to_tensor(features, name="features")
     return gen_nn_ops._relu6(features, name=name)
 
@@ -466,7 +488,7 @@ def softmax_cross_entropy_with_logits(logits, labels, name=None):
   output of `softmax`, as it will produce incorrect results.
 
   `logits` and `labels` must have the same shape `[batch_size, num_classes]`
-  and the same dtype (either `float32` or `float64`).
+  and the same dtype (either `float16`, `float32`, or `float64`).
 
   Args:
     logits: Unscaled log probabilities.
@@ -481,11 +503,18 @@ def softmax_cross_entropy_with_logits(logits, labels, name=None):
   # could break users who call this with bad labels, but disregard the bad
   # results.
 
+  logits = ops.convert_to_tensor(logits)
+  precise_logits = math_ops.cast(logits, dtypes.float32) if (
+      logits.dtype == dtypes.float16) else logits
+
   # The second output tensor contains the gradients.  We use it in
   # _CrossEntropyGrad() in nn_grad but not here.
   cost, unused_backprop = gen_nn_ops._softmax_cross_entropy_with_logits(
-      logits, labels, name=name)
-  return cost
+      precise_logits, labels, name=name)
+  if logits.dtype == dtypes.float16:
+    return math_ops.cast(cost, dtypes.float16)
+  else:
+    return cost
 
 
 def sparse_softmax_cross_entropy_with_logits(logits, labels, name=None):
@@ -532,40 +561,49 @@ def sparse_softmax_cross_entropy_with_logits(logits, labels, name=None):
   # labels, but disregard the bad results.
 
   # Reshape logits and labels to rank 2.
-  with ops.op_scope([labels, logits], name,
-                    "SparseSoftmaxCrossEntropyWithLogits"):
+  with ops.name_scope(name, "SparseSoftmaxCrossEntropyWithLogits",
+                      [labels, logits]):
     labels = ops.convert_to_tensor(labels)
     logits = ops.convert_to_tensor(logits)
+    precise_logits = math_ops.cast(logits, dtypes.float32) if (
+        dtypes.as_dtype(logits.dtype) == dtypes.float16) else logits
 
     # Store label shape for result later.
     labels_static_shape = labels.get_shape()
     labels_shape = array_ops.shape(labels)
     if logits.get_shape().ndims is not None and logits.get_shape().ndims == 0:
-      raise ValueError("Logits cannot be scalars - received shape %s.",
+      raise ValueError("Logits cannot be scalars - received shape %s." %
                        logits.get_shape())
     if logits.get_shape().ndims is not None and (
         labels_static_shape.ndims is not None and
         labels_static_shape.ndims != logits.get_shape().ndims - 1):
       raise ValueError("Rank mismatch: Labels rank (received %s) should equal "
-                       "logits rank (received %s) - 1.",
-                       labels_static_shape.ndims, logits.get_shape().ndims)
+                       "logits rank (received %s) - 1." %
+                       (labels_static_shape.ndims, logits.get_shape().ndims))
     # Check if no reshapes are required.
     if logits.get_shape().ndims == 2:
       cost, _ = gen_nn_ops._sparse_softmax_cross_entropy_with_logits(
-          logits, labels, name=name)
-      return cost
+          precise_logits, labels, name=name)
+      if logits.dtype == dtypes.float16:
+        return math_ops.cast(cost, dtypes.float16)
+      else:
+        return cost
+
     # Reshape logits to 2 dim, labels to 1 dim.
     num_classes = array_ops.gather(array_ops.shape(logits),
                                    array_ops.rank(logits) - 1)
-    logits = array_ops.reshape(logits, [-1, num_classes])
+    precise_logits = array_ops.reshape(precise_logits, [-1, num_classes])
     labels = array_ops.reshape(labels, [-1])
     # The second output tensor contains the gradients.  We use it in
     # _CrossEntropyGrad() in nn_grad but not here.
     cost, _ = gen_nn_ops._sparse_softmax_cross_entropy_with_logits(
-        logits, labels, name=name)
+        precise_logits, labels, name=name)
     cost = array_ops.reshape(cost, labels_shape)
     cost.set_shape(labels_static_shape)
-    return cost
+    if logits.dtype == dtypes.float16:
+      return math_ops.cast(cost, dtypes.float16)
+    else:
+      return cost
 
 
 @ops.RegisterShape("SparseSoftmaxCrossEntropyWithLogits")
@@ -611,7 +649,7 @@ def avg_pool(value, ksize, strides, padding, data_format="NHWC", name=None):
   Returns:
     A `Tensor` with the same type as `value`.  The average pooled output tensor.
   """
-  with ops.op_scope([value], name, "AvgPool") as name:
+  with ops.name_scope(name, "AvgPool", [value]) as name:
     value = ops.convert_to_tensor(value, name="input")
     return gen_nn_ops._avg_pool(value,
                                 ksize=ksize,
@@ -639,7 +677,7 @@ def max_pool(value, ksize, strides, padding, data_format="NHWC", name=None):
   Returns:
     A `Tensor` with type `tf.float32`.  The max pooled output tensor.
   """
-  with ops.op_scope([value], name, "MaxPool") as name:
+  with ops.name_scope(name, "MaxPool", [value]) as name:
     value = ops.convert_to_tensor(value, name="input")
     return gen_nn_ops._max_pool(value,
                                 ksize=ksize,
@@ -1026,7 +1064,7 @@ def xw_plus_b(x, weights, biases, name=None):  # pylint: disable=invalid-name
     A 2-D Tensor computing matmul(x, weights) + biases.
     Dimensions typically: batch, out_units.
   """
-  with ops.op_scope([x, weights, biases], name, "xw_plus_b") as name:
+  with ops.name_scope(name, "xw_plus_b", [x, weights, biases]) as name:
     x = ops.convert_to_tensor(x, name="x")
     weights = ops.convert_to_tensor(weights, name="weights")
     biases = ops.convert_to_tensor(biases, name="biases")
@@ -1050,7 +1088,7 @@ def xw_plus_b_v1(x, weights, biases, name=None):  # pylint: disable=invalid-name
     A 2-D Tensor computing matmul(x, weights) + biases.
     Dimensions typically: batch, out_units.
   """
-  with ops.op_scope([x, weights, biases], name, "xw_plus_b_v1") as name:
+  with ops.name_scope(name, "xw_plus_b_v1", [x, weights, biases]) as name:
     x = ops.convert_to_tensor(x, name="x")
     weights = ops.convert_to_tensor(weights, name="weights")
     biases = ops.convert_to_tensor(biases, name="biases")
@@ -1091,7 +1129,7 @@ def dropout(x, keep_prob, noise_shape=None, seed=None, name=None):
   Raises:
     ValueError: If `keep_prob` is not in `(0, 1]`.
   """
-  with ops.op_scope([x], name, "dropout") as name:
+  with ops.name_scope(name, "dropout", [x]) as name:
     x = ops.convert_to_tensor(x, name="x")
     if isinstance(keep_prob, float) and not 0 < keep_prob <= 1:
       raise ValueError("keep_prob must be a scalar tensor or a float in the "
@@ -1101,6 +1139,10 @@ def dropout(x, keep_prob, noise_shape=None, seed=None, name=None):
                                       name="keep_prob")
     keep_prob.get_shape().assert_is_compatible_with(tensor_shape.scalar())
 
+    # Do nothing if we know keep_prob == 1
+    if tensor_util.constant_value(keep_prob) == 1:
+      return x
+
     noise_shape = noise_shape if noise_shape is not None else array_ops.shape(x)
     # uniform [keep_prob, 1.0 + keep_prob)
     random_tensor = keep_prob
@@ -1109,7 +1151,7 @@ def dropout(x, keep_prob, noise_shape=None, seed=None, name=None):
                                                dtype=x.dtype)
     # 0. if [keep_prob, 1.0) and 1. if [1.0, 1.0 + keep_prob)
     binary_tensor = math_ops.floor(random_tensor)
-    ret = x * math_ops.inv(keep_prob) * binary_tensor
+    ret = math_ops.div(x, keep_prob) * binary_tensor
     ret.set_shape(x.get_shape())
     return ret
 
@@ -1178,7 +1220,7 @@ def conv1d(value, filters, stride, padding,
   Returns:
     A `Tensor`.  Has the same type as input.
   """
-  with ops.op_scope([value, filters], name, "conv1d") as name:
+  with ops.name_scope(name, "conv1d", [value, filters]) as name:
     # Reshape the input tensor to [batch, 1, in_width, in_channels]
     value = array_ops.expand_dims(value, 1)
     # And reshape the filter to [1, filter_width, in_channels, out_channels]
@@ -1316,7 +1358,7 @@ def erosion2d(value, kernel, strides, rates, padding, name=None):
     ValueError: If the `value` depth does not match `kernel`' shape, or if
       padding is other than `'VALID'` or `'SAME'`.
   """
-  with ops.op_scope([value, kernel], name, "erosion2d") as name:
+  with ops.name_scope(name, "erosion2d", [value, kernel]) as name:
     # Reduce erosion to dilation by duality.
     return math_ops.neg(gen_nn_ops.dilation2d(input=math_ops.neg(value),
                                               filter=array_ops.reverse(

@@ -19,7 +19,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from tensorflow.contrib import layers
 from tensorflow.contrib.learn.python.learn.estimators import _sklearn
 from tensorflow.contrib.learn.python.learn.estimators import dnn_linear_combined
 from tensorflow.contrib.learn.python.learn.estimators.base import DeprecatedMixin
@@ -75,15 +74,18 @@ class DNNClassifier(dnn_linear_combined.DNNLinearCombinedClassifier):
   * for each `column` in `feature_columns`:
     - if `column` is a `SparseColumn`, a feature with `key=column.name`
       whose `value` is a `SparseTensor`.
+    - if `column` is a `WeightedSparseColumn`, two features: the first with
+      `key` the id column name, the second with `key` the weight column name.
+      Both features' `value` must be a `SparseTensor`.
     - if `column` is a `RealValuedColumn`, a feature with `key=column.name`
       whose `value` is a `Tensor`.
-    - if `feature_columns` is `None`, then `input` must contains only real
+    - if `feature_columns` is `None`, then `input` must contain only real
       valued `Tensor`.
   """
 
   def __init__(self,
                hidden_units,
-               feature_columns=None,
+               feature_columns,
                model_dir=None,
                n_classes=2,
                weight_column_name=None,
@@ -102,7 +104,9 @@ class DNNClassifier(dnn_linear_combined.DNNLinearCombinedClassifier):
       feature_columns: An iterable containing all the feature columns used by
         the model. All items in the set should be instances of classes derived
         from `FeatureColumn`.
-      model_dir: Directory to save model parameters, graph and etc.
+      model_dir: Directory to save model parameters, graph and etc. This can also
+        be used to load checkpoints from the directory into a estimator to continue
+        training a previously saved model.
       n_classes: number of target classes. Default is binary classification.
         It must be greater than 1.
       weight_column_name: A string defining feature column name representing
@@ -137,36 +141,12 @@ class DNNClassifier(dnn_linear_combined.DNNLinearCombinedClassifier):
         gradient_clip_norm=gradient_clip_norm,
         enable_centered_bias=enable_centered_bias,
         config=config)
+    self.feature_columns = feature_columns
+    self.optimizer = optimizer
+    self.activation_fn = activation_fn
+    self.dropout = dropout
+    self.hidden_units = hidden_units
     self._feature_columns_inferred = False
-
-  # TODO(ptucker): Update this class to require caller pass `feature_columns` to
-  # ctor, so we can remove feature_column inference.
-  def _validate_dnn_feature_columns(self, features):
-    if self._dnn_feature_columns is None:
-      self._dnn_feature_columns = layers.infer_real_valued_columns(features)
-      self._feature_columns_inferred = True
-    elif self._feature_columns_inferred:
-      this_dict = {c.name: c for c in self._dnn_feature_columns}
-      that_dict = {
-          c.name: c for c in layers.infer_real_valued_columns(features)
-      }
-      if this_dict != that_dict:
-        raise ValueError(
-            "Feature columns, expected %s, got %s.", (this_dict, that_dict))
-
-  def _get_train_ops(self, features, targets):
-    """See base class."""
-    self._validate_dnn_feature_columns(features)
-    return super(DNNClassifier, self)._get_train_ops(features, targets)
-
-  def _get_eval_ops(self, features, targets, metrics=None):
-    self._validate_dnn_feature_columns(features)
-    return super(DNNClassifier, self)._get_eval_ops(features, targets, metrics)
-
-  def _get_predict_ops(self, features):
-    """See base class."""
-    self._validate_dnn_feature_columns(features)
-    return super(DNNClassifier, self)._get_predict_ops(features)
 
   @property
   def weights_(self):
@@ -226,15 +206,18 @@ class DNNRegressor(dnn_linear_combined.DNNLinearCombinedRegressor):
   * for each `column` in `feature_columns`:
     - if `column` is a `SparseColumn`, a feature with `key=column.name`
       whose `value` is a `SparseTensor`.
+    - if `column` is a `WeightedSparseColumn`, two features: the first with
+      `key` the id column name, the second with `key` the weight column name.
+      Both features' `value` must be a `SparseTensor`.
     - if `column` is a `RealValuedColumn`, a feature with `key=column.name`
       whose `value` is a `Tensor`.
-    - if `feature_columns` is `None`, then `input` must contains only real
+    - if `feature_columns` is `None`, then `input` must contain only real
       valued `Tensor`.
   """
 
   def __init__(self,
                hidden_units,
-               feature_columns=None,
+               feature_columns,
                model_dir=None,
                weight_column_name=None,
                optimizer=None,
@@ -252,7 +235,9 @@ class DNNRegressor(dnn_linear_combined.DNNLinearCombinedRegressor):
       feature_columns: An iterable containing all the feature columns used by
         the model. All items in the set should be instances of classes derived
         from `FeatureColumn`.
-      model_dir: Directory to save model parameters, graph and etc.
+      model_dir: Directory to save model parameters, graph and etc. This can also
+        be used to load checkpoints from the directory into a estimator to continue
+        training a previously saved model.
       weight_column_name: A string defining feature column name representing
         weights. It is used to down weight or boost examples during training. It
         will be multiplied by the loss of the example.
@@ -284,34 +269,12 @@ class DNNRegressor(dnn_linear_combined.DNNLinearCombinedRegressor):
         gradient_clip_norm=gradient_clip_norm,
         enable_centered_bias=enable_centered_bias,
         config=config)
+    self.feature_columns = feature_columns
+    self.optimizer = optimizer
+    self.activation_fn = activation_fn
+    self.dropout = dropout
+    self.hidden_units = hidden_units
     self._feature_columns_inferred = False
-
-  def _validate_dnn_feature_columns(self, features):
-    if self._dnn_feature_columns is None:
-      self._dnn_feature_columns = layers.infer_real_valued_columns(features)
-      self._feature_columns_inferred = True
-    elif self._feature_columns_inferred:
-      this_dict = {c.name: c for c in self._dnn_feature_columns}
-      that_dict = {
-          c.name: c for c in layers.infer_real_valued_columns(features)
-      }
-      if this_dict != that_dict:
-        raise ValueError(
-            "Feature columns, expected %s, got %s.", (this_dict, that_dict))
-
-  def _get_train_ops(self, features, targets):
-    """See base class."""
-    self._validate_dnn_feature_columns(features)
-    return super(DNNRegressor, self)._get_train_ops(features, targets)
-
-  def _get_eval_ops(self, features, targets, metrics=None):
-    self._validate_dnn_feature_columns(features)
-    return super(DNNRegressor, self)._get_eval_ops(features, targets, metrics)
-
-  def _get_predict_ops(self, features):
-    """See base class."""
-    self._validate_dnn_feature_columns(features)
-    return super(DNNRegressor, self)._get_predict_ops(features)
 
   @property
   def weights_(self):

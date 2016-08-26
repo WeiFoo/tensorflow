@@ -20,7 +20,9 @@ from __future__ import division
 from __future__ import print_function
 
 import abc
+import copy
 import inspect
+import itertools
 import os
 import tempfile
 import time
@@ -29,22 +31,36 @@ import numpy as np
 import six
 
 from tensorflow.contrib import framework as contrib_framework
+from tensorflow.contrib import layers
+from tensorflow.contrib import metrics as metrics_lib
+from tensorflow.contrib.framework import deprecated_arg_values
+from tensorflow.contrib.learn.python.learn import evaluable
 from tensorflow.contrib.learn.python.learn import graph_actions
-from tensorflow.contrib.learn.python.learn import monitors as monitors_lib
+from tensorflow.contrib.learn.python.learn import monitors as monitor_lib
+from tensorflow.contrib.learn.python.learn import session_run_hook
+from tensorflow.contrib.learn.python.learn import trainable
 from tensorflow.contrib.learn.python.learn.estimators import _sklearn as sklearn
 from tensorflow.contrib.learn.python.learn.estimators import run_config
 from tensorflow.contrib.learn.python.learn.estimators import tensor_signature
 from tensorflow.contrib.learn.python.learn.estimators._sklearn import NotFittedError
-from tensorflow.contrib.learn.python.learn.io import data_feeder
+from tensorflow.contrib.learn.python.learn.learn_io import data_feeder
 from tensorflow.contrib.learn.python.learn.utils import checkpoints
+from tensorflow.contrib.learn.python.learn.utils import export
 
+from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import random_seed
 from tensorflow.python.ops import control_flow_ops
-from tensorflow.python.ops import logging_ops
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.training import device_setter
 from tensorflow.python.training import saver
+
+
+AS_ITERABLE_DATE = '2016-09-15'
+AS_ITERABLE_INSTRUCTIONS = (
+    'The default behavior of predict() is changing. The default value for\n'
+    'as_iterable will change to True, and then the flag will be removed\n'
+    'altogether. The behavior of this flag is described below.')
 
 
 class ModeKeys(object):
@@ -72,6 +88,9 @@ def _get_input_fn(x, y, input_fn, feed_fn, batch_size, shuffle=False, epochs=1):
                                           contrib_framework.is_tensor(y)):
       raise ValueError('Inputs cannot be tensors. Please provide input_fn.')
 
+    if feed_fn is not None:
+      raise ValueError('Can not provide both feed_fn and x or y.')
+
     df = data_feeder.setup_train_data_feeder(x, y, n_classes=None,
                                              batch_size=batch_size,
                                              shuffle=shuffle,
@@ -84,6 +103,41 @@ def _get_input_fn(x, y, input_fn, feed_fn, batch_size, shuffle=False, epochs=1):
     raise ValueError('Can not provide both input_fn and batch_size.')
 
   return input_fn, feed_fn
+
+
+def infer_real_valued_columns_from_input_fn(input_fn):
+  """Creates `FeatureColumn` objects for inputs defined by `input_fn`.
+
+  This interprets all inputs as dense, fixed-length float values. This creates
+  a local graph in which it calls `input_fn` to build the tensors, then discards
+  it.
+
+  Args:
+    input_fn: Function returning a tuple of input and target `Tensor` objects.
+
+  Returns:
+    List of `FeatureColumn` objects.
+  """
+  with ops.Graph().as_default():
+    features, _ = input_fn()
+    return layers.infer_real_valued_columns(features)
+
+
+def infer_real_valued_columns_from_input(x):
+  """Creates `FeatureColumn` objects for inputs defined by input `x`.
+
+  This interprets all inputs as dense, fixed-length float values.
+
+  Args:
+    x: Real-valued matrix of shape [n_samples, n_features...]. Can be
+       iterator that returns arrays of features.
+
+  Returns:
+    List of `FeatureColumn` objects.
+  """
+  input_fn, _ = _get_input_fn(
+      x=x, y=None, input_fn=None, feed_fn=None, batch_size=None)
+  return infer_real_valued_columns_from_input_fn(input_fn)
 
 
 def _get_arguments(func):
@@ -99,7 +153,27 @@ def _get_arguments(func):
     return _get_arguments(func.func)
 
 
-class BaseEstimator(sklearn.BaseEstimator):
+def _get_replica_device_setter(config):
+  """Creates a replica device setter if required.
+
+  Args:
+    config: A RunConfig instance.
+
+  Returns:
+    A replica device setter, or None.
+  """
+  ps_ops = ['Variable', 'AutoReloadVariable',
+            'MutableHashTable', 'MutableHashTableOfTensors']
+  if config.num_ps_replicas > 0:
+    return device_setter.replica_device_setter(
+        ps_tasks=config.num_ps_replicas, merge_devices=False, ps_ops=ps_ops,
+        cluster=config.cluster_spec)
+  else:
+    return None
+
+
+class BaseEstimator(
+    sklearn.BaseEstimator, evaluable.Evaluable, trainable.Trainable):
   """Abstract BaseEstimator class to train and evaluate TensorFlow models.
 
   Concrete implementation of this class should provide the following functions:
@@ -112,6 +186,8 @@ class BaseEstimator(sklearn.BaseEstimator):
   """
   __metaclass__ = abc.ABCMeta
 
+  # Note that for Google users, this is overriden with
+  # learn_runner.EstimatorConfig.
   # TODO(wicke): Remove this once launcher takes over config functionality
   _Config = run_config.RunConfig  # pylint: disable=invalid-name
 
@@ -119,7 +195,9 @@ class BaseEstimator(sklearn.BaseEstimator):
     """Initializes a BaseEstimator instance.
 
     Args:
-      model_dir: Directory to save model parameters, graph and etc.
+      model_dir: Directory to save model parameters, graph and etc. This can
+        also be used to load checkpoints from the directory into a estimator to
+        continue training a previously saved model.
       config: A RunConfig instance.
     """
     # Model directory.
@@ -132,17 +210,13 @@ class BaseEstimator(sklearn.BaseEstimator):
     # Create a run configuration
     if config is None:
       self._config = BaseEstimator._Config()
+      logging.warning('Using default config.')
     else:
       self._config = config
+    logging.info('Using config: %s', str(vars(self._config)))
 
     # Set device function depending if there are replicas or not.
-    if self._config.num_ps_replicas > 0:
-      ps_ops = ['Variable', 'AutoReloadVariable']
-      self._device_fn = device_setter.replica_device_setter(
-          ps_tasks=self._config.num_ps_replicas,
-          merge_devices=False, ps_ops=ps_ops)
-    else:
-      self._device_fn = None
+    self._device_fn = _get_replica_device_setter(self._config)
 
     # Features and targets TensorSignature objects.
     # TODO(wicke): Rename these to something more descriptive
@@ -151,36 +225,15 @@ class BaseEstimator(sklearn.BaseEstimator):
 
     self._graph = None
 
+  @property
+  def config(self):
+    # TODO(wicke): make RunConfig immutable, and then return it without a copy.
+    return copy.deepcopy(self._config)
+
   def fit(self, x=None, y=None, input_fn=None, steps=None, batch_size=None,
           monitors=None, max_steps=None):
-    """Trains a model given training data `x` predictions and `y` targets.
-
-    Args:
-      x: matrix or tensor of shape [n_samples, n_features...]. Can be
-         iterator that returns arrays of features. The training input
-         samples for fitting the model. If set, `input_fn` must be `None`.
-      y: vector or matrix [n_samples] or [n_samples, n_outputs]. Can be
-         iterator that returns array of targets. The training target values
-         (class labels in classification, real numbers in regression). If set,
-         `input_fn` must be `None`.
-      input_fn: Input function. If set, `x`, `y`, and `batch_size` must be
-        `None`.
-      steps: Number of steps for which to train model. If `None`, train forever.
-        If set, `max_steps` must be `None`.
-      batch_size: minibatch size to use on the input, defaults to first
-        dimension of `x`. Must be `None` if `input_fn` is provided.
-      monitors: List of `BaseMonitor` subclass instances. Used for callbacks
-        inside the training loop.
-      max_steps: Number of total steps for which to train model. If `None`,
-        train forever. If set, `steps` must be `None`.
-
-        Two calls to `fit(steps=100)` means 200 training
-        iterations. On the other hand, two calls to `fit(max_steps=100)` means
-        that the second call will not do any iteration since first call did
-        all 100 steps.
-
-    Returns:
-      `self`, for chaining.
+    # pylint: disable=g-doc-args,g-doc-return-or-yield
+    """See `Trainable`.
 
     Raises:
       ValueError: If `x` or `y` are not `None` while `input_fn` is not `None`.
@@ -214,12 +267,12 @@ class BaseEstimator(sklearn.BaseEstimator):
     to converge, and you want to split up training into subparts.
 
     Args:
-      x: matrix or tensor of shape [n_samples, n_features...]. Can be
-        iterator that returns arrays of features. The training input
-        samples for fitting the model. If set, `input_fn` must be `None`.
-      y: vector or matrix [n_samples] or [n_samples, n_outputs]. Can be
-        iterator that returns array of targets. The training target values
-        (class label in classification, real numbers in regression). If set,
+      x: Matrix of shape [n_samples, n_features...]. Can be iterator that
+         returns arrays of features. The training input samples for fitting the
+         model. If set, `input_fn` must be `None`.
+      y: Vector or matrix [n_samples] or [n_samples, n_outputs]. Can be
+         iterator that returns array of targets. The training target values
+         (class labels in classification, real numbers in regression). If set,
          `input_fn` must be `None`.
       input_fn: Input function. If set, `x`, `y`, and `batch_size` must be
         `None`.
@@ -241,56 +294,11 @@ class BaseEstimator(sklearn.BaseEstimator):
     return self.fit(x=x, y=y, input_fn=input_fn, steps=steps,
                     batch_size=batch_size, monitors=monitors)
 
-  def evaluate(self,
-               x=None,
-               y=None,
-               input_fn=None,
-               feed_fn=None,
-               batch_size=None,
-               steps=None,
-               metrics=None,
-               name=None):
-    """Evaluates given model with provided evaluation data.
-
-    Evaluates on the given input data. If `input_fn` is provided, that
-    input function should raise an end-of-input exception (`OutOfRangeError` or
-    `StopIteration`) after one epoch of the training data has been provided.
-
-    By default, the whole evaluation dataset is used. If `steps` is provided,
-    only `steps` batches of size `batch_size` are processed.
-
-    The return value is a dict containing the metrics specified in `metrics`, as
-    well as an entry `global_step` which contains the value of the global step
-    for which this evaluation was performed.
-
-    Args:
-      x: features.
-      y: targets.
-      input_fn: Input function. If set, `x`, `y`, and `batch_size` must be
-        `None`.
-      feed_fn: Function creating a feed dict every time it is called. Called
-        once per iteration.
-      batch_size: minibatch size to use on the input, defaults to first
-        dimension of `x`, if specified. Must be `None` if `input_fn` is
-        provided.
-      steps: Number of steps for which to evaluate model. If `None`, evaluate
-        until running tensors generated by `metrics` raises an exception.
-      metrics: Dict of metric ops to run. If `None`, the default metric
-        functions are used; if `{}`, no metrics are used. If model has one
-        output (i.e., returning single predction), keys are `str`, e.g.
-        `'accuracy'` - just a name of the metric that will show up in
-        the logs / summaries. Otherwise, keys are tuple of two `str`, e.g.
-        `('accuracy', 'classes')`- name of the metric and name of `Tensor` in
-        the predictions to run this metric on.
-
-        Metric ops should support streaming, e.g., returning
-        update_op and value tensors. See more details in
-        ../../../../metrics/python/metrics/ops/streaming_metrics.py.
-      name: Name of the evaluation if user needs to run multiple evaluations on
-        different data sets, such as on training data vs test data.
-
-    Returns:
-      Returns `dict` with evaluation results.
+  def evaluate(
+      self, x=None, y=None, input_fn=None, feed_fn=None, batch_size=None,
+      steps=None, metrics=None, name=None):
+    # pylint: disable=g-doc-args,g-doc-return-or-yield
+    """See `Evaluable`.
 
     Raises:
       ValueError: If at least one of `x` or `y` is provided, and at least one of
@@ -312,27 +320,42 @@ class BaseEstimator(sklearn.BaseEstimator):
       eval_results.update({'global_step': global_step})
     return eval_results
 
-  def predict(self, x=None, input_fn=None, batch_size=None, outputs=None):
+  @deprecated_arg_values(
+      AS_ITERABLE_DATE, AS_ITERABLE_INSTRUCTIONS, as_iterable=False)
+  def predict(
+      self, x=None, input_fn=None, batch_size=None, outputs=None,
+      as_iterable=False):
     """Returns predictions for given features.
 
     Args:
-      x: Features. If set, `input_fn` must be `None`.
-      input_fn: Input function. If set, `x` must be `None`.
-      batch_size: Override default batch size.
+      x: Matrix of shape [n_samples, n_features...]. Can be iterator that
+         returns arrays of features. The training input samples for fitting the
+         model. If set, `input_fn` must be `None`.
+      input_fn: Input function. If set, `x` and 'batch_size' must be `None`.
+      batch_size: Override default batch size. If set, 'input_fn' must be
+        'None'.
       outputs: list of `str`, name of the output to predict.
-               If `None`, returns all.
+        If `None`, returns all.
+      as_iterable: If True, return an iterable which keeps yielding predictions
+        for each example until inputs are exhausted. Note: The inputs must
+        terminate if you want the iterable to terminate (e.g. be sure to pass
+        num_epochs=1 if you are using something like read_batch_features).
 
     Returns:
-      Numpy array of predicted classes or regression values.
+      A numpy array of predicted classes or regression values if the
+      constructor's `model_fn` returns a `Tensor` for `predictions` or a `dict`
+      of numpy arrays if `model_fn` returns a `dict`. Returns an iterable of
+      predictions if as_iterable is True.
 
     Raises:
       ValueError: If x and input_fn are both provided or both `None`.
     """
-    input_fn, feed_fn = _get_input_fn(x, None, input_fn=input_fn,
-                                      feed_fn=None, batch_size=batch_size,
-                                      shuffle=False, epochs=1)
-    return self._infer_model(input_fn=input_fn, feed_fn=feed_fn,
-                             outputs=outputs)
+    input_fn, feed_fn = _get_input_fn(
+        x, None, input_fn=input_fn, feed_fn=None, batch_size=batch_size,
+        shuffle=False, epochs=1)
+    return self._infer_model(
+        input_fn=input_fn, feed_fn=feed_fn, outputs=outputs,
+        as_iterable=as_iterable)
 
   def get_variable_value(self, name):
     """Returns value of the variable given by name.
@@ -358,6 +381,30 @@ class BaseEstimator(sklearn.BaseEstimator):
   @property
   def model_dir(self):
     return self._model_dir
+
+  def export(self, export_dir, signature_fn=None, input_fn=None,
+             default_batch_size=1, exports_to_keep=None):
+    """Exports inference graph into given dir.
+
+    Args:
+      export_dir: A string containing a directory to write the exported graph
+        and checkpoints.
+      signature_fn: Function that returns a default signature and a named
+        signature map, given `Tensor` of `Example` strings, `dict` of `Tensor`s
+        for features and `Tensor` or `dict` of `Tensor`s for predictions.
+      input_fn: Function that given `Tensor` of `Example` strings, parses it
+        into features that are then passed to the model.
+      default_batch_size: Default batch size of the `Example` placeholder.
+      exports_to_keep: Number of exports to keep.
+    """
+    # pylint: disable=protected-access
+    export._export_estimator(estimator=self,
+                             export_dir=export_dir,
+                             signature_fn=signature_fn,
+                             input_fn=input_fn,
+                             default_batch_size=default_batch_size,
+                             exports_to_keep=exports_to_keep)
+    # pylint: enable=protected-access
 
   @abc.abstractproperty
   def _get_train_ops(self, features, targets):
@@ -431,8 +478,8 @@ class BaseEstimator(sklearn.BaseEstimator):
 
   def _check_inputs(self, features, targets):
     if self._features_info is not None:
-      logging.warning('Given features: %s, required signatures: %s.' %
-                      (str(features), str(self._features_info)))
+      logging.warning('Given features: %s, required signatures: %s.',
+                      str(features), str(self._features_info))
       if not tensor_signature.tensors_compatible(features, self._features_info):
         raise ValueError('Features are incompatible with given information. '
                          'Given features: %s, required signatures: %s.' %
@@ -442,8 +489,8 @@ class BaseEstimator(sklearn.BaseEstimator):
       logging.warning('Setting feature info to %s', str(self._features_info))
     if targets is not None:
       if self._targets_info is not None:
-        logging.warning('Given targets: %s, required signatures: %s.' %
-                        (str(targets), str(self._targets_info)))
+        logging.warning('Given targets: %s, required signatures: %s.',
+                        str(targets), str(self._targets_info))
         if not tensor_signature.tensors_compatible(targets, self._targets_info):
           raise ValueError('Targets are incompatible with given information. '
                            'Given targets: %s, required signatures: %s.' %
@@ -494,22 +541,28 @@ class BaseEstimator(sklearn.BaseEstimator):
       if monitors is None:
         monitors = []
 
-      is_chief = self._config.task == 0
+      hooks = [m for m in monitors
+               if isinstance(m, session_run_hook.SessionRunHook)]
 
-      if is_chief:
-        monitors += monitors_lib.get_default_monitors(
-            loss_op=loss_op,
-            summary_op=logging_ops.get_summary_op(),
-            save_summary_steps=self._config.save_summary_steps,
-            summary_writer=graph_actions.get_summary_writer(self._model_dir))
-      else:
-        monitors = []
+      deprecated_monitors = [
+          m for m in monitors
+          if not isinstance(m, session_run_hook.SessionRunHook)
+      ]
+
+      supervisor_is_chief = (self._config.task == 0)
+      if not supervisor_is_chief:
+        # Prune list of monitor to the ones runnable on all workers.
+        deprecated_monitors = [m for m in deprecated_monitors
+                               if m.run_on_all_workers]
 
       # Setup monitors.
-      for monitor in monitors:
+      for monitor in deprecated_monitors:
         monitor.set_estimator(self)
 
-      return graph_actions.train(
+      if deprecated_monitors:
+        hooks.append(monitor_lib.RunHookAdapterForMonitors(deprecated_monitors))
+
+      return graph_actions._monitored_train(  # pylint: disable=protected-access
           graph=g,
           output_dir=self._model_dir,
           train_op=train_op,
@@ -519,14 +572,15 @@ class BaseEstimator(sklearn.BaseEstimator):
           init_feed_dict=init_feed_fn() if init_feed_fn is not None else None,
           init_fn=init_fn,
           log_every_steps=log_every_steps,
-          supervisor_is_chief=is_chief,
+          supervisor_is_chief=supervisor_is_chief,
           supervisor_master=self._config.master,
           supervisor_save_model_secs=self._config.save_checkpoints_secs,
+          supervisor_save_summaries_steps=self._config.save_summary_steps,
           keep_checkpoint_max=self._config.keep_checkpoint_max,
           feed_fn=feed_fn,
           steps=steps,
           fail_on_nan_loss=fail_on_nan_loss,
-          monitors=monitors,
+          hooks=hooks,
           max_steps=max_steps)
 
   def _extract_metric_update_ops(self, eval_dict):
@@ -600,7 +654,8 @@ class BaseEstimator(sklearn.BaseEstimator):
       return result[0]
     return result
 
-  def _infer_model(self, input_fn, feed_fn=None, outputs=None):
+  def _infer_model(
+      self, input_fn, feed_fn=None, outputs=None, as_iterable=False):
     # Check that model has been trained.
     checkpoint_path = saver.latest_checkpoint(self._model_dir)
     if not checkpoint_path:
@@ -614,9 +669,10 @@ class BaseEstimator(sklearn.BaseEstimator):
       predictions = self._get_predict_ops(features)
       # If predictions is single output - wrap it into dict, and remember to
       # return not a dict.
-      return_dict = True
-      if not isinstance(predictions, dict):
-        predictions, return_dict = {'predictions': predictions}, False
+      return_dict = isinstance(predictions, dict)
+      if not return_dict:
+        predictions = {'predictions': predictions}
+
       # Filter what to run predictions on, if outputs provided.
       if outputs:
         existing_keys = predictions.keys()
@@ -626,23 +682,61 @@ class BaseEstimator(sklearn.BaseEstimator):
         if not predictions:
           raise ValueError('Expected to run at least one output from %s, '
                            'provided %s.' % (existing_keys, outputs))
-      if feed_fn is None:
-        preds = graph_actions.infer(checkpoint_path, predictions)
+
+      if as_iterable:
+        return self._infer_model_as_iterable(
+            checkpoint_path, predictions, feed_fn, return_dict)
       else:
-        preds = {}
-        def _feed_fn():
-          while True:
-            yield feed_fn()
-        outputs = graph_actions.run_feeds(
-            output_dict=predictions,
-            feed_dicts=_feed_fn(),
-            restore_checkpoint_path=checkpoint_path)
-        for key in predictions:
-          preds[key] = np.concatenate(
-              [output[key] for output in outputs], axis=0)
-      if return_dict:
-        return preds
-      return preds['predictions']
+        return self._infer_model_single(
+            checkpoint_path, predictions, feed_fn, return_dict)
+
+  def _infer_model_single(
+      self, checkpoint_path, predictions, feed_fn, return_dict):
+    if feed_fn is None:
+      preds = graph_actions.infer(checkpoint_path, predictions)
+    else:
+      def _feed_fn():
+        while True:
+          yield feed_fn()
+
+      outputs = graph_actions.run_feeds(
+          output_dict=predictions,
+          feed_dicts=_feed_fn(),
+          restore_checkpoint_path=checkpoint_path)
+      preds = {
+          key: np.concatenate([output[key] for output in outputs], axis=0)
+          for key in predictions}
+
+    return preds if return_dict else preds['predictions']
+
+  def _infer_model_as_iterable(
+      self, checkpoint_path, predictions, feed_fn, return_dict):
+    if feed_fn is None:
+      feed_dicts = itertools.repeat(None)
+    else:
+      def _feed_fn():
+        while True:
+          yield feed_fn()
+      feed_dicts = _feed_fn()
+
+    try:
+      for output_batch in graph_actions.run_feeds_iter(
+          output_dict=predictions,
+          feed_dicts=feed_dicts,
+          restore_checkpoint_path=checkpoint_path):
+        # Unpack batches into individual predictions
+        if return_dict:
+          batch_length = list(output_batch.values())[0].shape[0]
+          for i in range(batch_length):
+            yield {key: value[i] for key, value in output_batch.items()}
+        else:
+          for pred in output_batch['predictions']:
+            yield pred
+
+    except errors.OutOfRangeError:
+      # We fall out of the above loop naturally if feed_fn raises StopIteration,
+      # or we catch an OutOfRangeError if we've reached the end of inputs.
+      logging.info('Reached end of inputs for predict_iter.')
 
 
 class Estimator(BaseEstimator):
@@ -669,15 +763,20 @@ class Estimator(BaseEstimator):
 
           * `features` are single `Tensor` or `dict` of `Tensor`s
                  (depending on data passed to `fit`),
-          * `targets` are `Tensor` or
-                 `dict` of `Tensor`s (for multi-head model).
+          * `targets` are `Tensor` or `dict` of `Tensor`s (for multi-head
+                 models). If mode is `ModeKeys.INFER`, `targets=None` will be
+                 passed. If the `model_fn`'s signature does not accept
+                 `mode`, the `model_fn` must still be able to handle
+                 `targets=None`.
           * `mode` represents if this training, evaluation or
-                 prediction. See `ModeKeys` for example keys.
+                 prediction. See `ModeKeys`.
           * `params` is a `dict` of hyperparameters. Will receive what
                  is passed to Estimator in `params` parameter. This allows
                  to configure Estimators from hyper parameter tunning.
 
-      model_dir: Directory to save model parameters, graph and etc.
+      model_dir: Directory to save model parameters, graph and etc. This can
+        also be used to load checkpoints from the directory into a estimator to
+        continue training a previously saved model.
       config: Configuration object.
       params: `dict` of hyper parameters that will be passed into `model_fn`.
               Keys are names of parameters, values are basic python types.
@@ -695,7 +794,7 @@ class Estimator(BaseEstimator):
                          (model_fn, params))
       if params is None and 'params' in model_fn_args:
         logging.warning('Estimator\'s model_fn (%s) has includes params '
-                        'argument, but params are not passed to Estimator.' %
+                        'argument, but params are not passed to Estimator.',
                         model_fn)
     self._model_fn = model_fn
     self.params = params
@@ -754,7 +853,8 @@ class Estimator(BaseEstimator):
       ValueError: if `metrics` don't match `targets`.
     """
     predictions, loss, _ = self._call_model_fn(features, targets, ModeKeys.EVAL)
-    result = {'loss': loss}
+    result = {'loss': metrics_lib.streaming_mean(loss)}
+
     metrics = metrics or {}
     if isinstance(targets, dict) and len(targets) == 1:
       # Unpack single target into just tensor.

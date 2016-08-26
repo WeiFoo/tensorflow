@@ -13,6 +13,11 @@ Module for constructing RNN Cells.
 
 Abstract object representing an RNN cell.
 
+The definition of cell in this package differs from the definition used in the
+literature. In the literature, cell refers to an object with a single scalar
+output. The definition in this package refers to a horizontal array of such
+units.
+
 An RNN cell, in the most abstract setting, is anything that has
 a state and performs some operation that takes a matrix of inputs.
 This operation results in an output matrix with `self.output_size` columns.
@@ -136,7 +141,7 @@ use peep-hole connections: it is the basic baseline.
 For advanced models, please use the full LSTMCell that follows.
 - - -
 
-#### `tf.nn.rnn_cell.BasicLSTMCell.__init__(num_units, forget_bias=1.0, input_size=None, state_is_tuple=False, activation=tanh)` {#BasicLSTMCell.__init__}
+#### `tf.nn.rnn_cell.BasicLSTMCell.__init__(num_units, forget_bias=1.0, input_size=None, state_is_tuple=True, activation=tanh)` {#BasicLSTMCell.__init__}
 
 Initialize the basic LSTM cell.
 
@@ -147,8 +152,8 @@ Initialize the basic LSTM cell.
 *  <b>`forget_bias`</b>: float, The bias added to forget gates (see above).
 *  <b>`input_size`</b>: Deprecated and unused.
 *  <b>`state_is_tuple`</b>: If True, accepted and returned states are 2-tuples of
-    the `c_state` and `m_state`.  By default (False), they are concatenated
-    along the column axis.  This default behavior will soon be deprecated.
+    the `c_state` and `m_state`.  If False, they are concatenated
+    along the column axis.  The latter behavior will soon be deprecated.
 *  <b>`activation`</b>: Activation function of the inner states.
 
 
@@ -263,7 +268,7 @@ The class uses optional peep-hole connections, optional cell clipping, and
 an optional projection layer.
 - - -
 
-#### `tf.nn.rnn_cell.LSTMCell.__init__(num_units, input_size=None, use_peepholes=False, cell_clip=None, initializer=None, num_proj=None, num_unit_shards=1, num_proj_shards=1, forget_bias=1.0, state_is_tuple=False, activation=tanh)` {#LSTMCell.__init__}
+#### `tf.nn.rnn_cell.LSTMCell.__init__(num_units, input_size=None, use_peepholes=False, cell_clip=None, initializer=None, num_proj=None, proj_clip=None, num_unit_shards=1, num_proj_shards=1, forget_bias=1.0, state_is_tuple=True, activation=tanh)` {#LSTMCell.__init__}
 
 Initialize the parameters for an LSTM cell.
 
@@ -279,6 +284,10 @@ Initialize the parameters for an LSTM cell.
     projection matrices.
 *  <b>`num_proj`</b>: (optional) int, The output dimensionality for the projection
     matrices.  If None, no projection is performed.
+*  <b>`proj_clip`</b>: (optional) A float value.  If `num_proj > 0` and `proj_clip` is
+  provided, then the projected values are clipped elementwise to within
+  `[-proj_clip, proj_clip]`.
+
 *  <b>`num_unit_shards`</b>: How to split the weight matrix.  If >1, the weight
     matrix is stored across num_unit_shards.
 *  <b>`num_proj_shards`</b>: How to split the projection matrix.  If >1, the
@@ -287,8 +296,8 @@ Initialize the parameters for an LSTM cell.
     in order to reduce the scale of forgetting at the beginning of
     the training.
 *  <b>`state_is_tuple`</b>: If True, accepted and returned states are 2-tuples of
-    the `c_state` and `m_state`.  By default (False), they are concatenated
-    along the column axis.  This default behavior will soon be deprecated.
+    the `c_state` and `m_state`.  If False, they are concatenated
+    along the column axis.  This latter behavior will soon be deprecated.
 *  <b>`activation`</b>: Activation function of the inner states.
 
 
@@ -350,6 +359,13 @@ Alias for field number 0
 
 - - -
 
+#### `tf.nn.rnn_cell.LSTMStateTuple.dtype` {#LSTMStateTuple.dtype}
+
+
+
+
+- - -
+
 #### `tf.nn.rnn_cell.LSTMStateTuple.h` {#LSTMStateTuple.h}
 
 Alias for field number 1
@@ -366,7 +382,7 @@ Alias for field number 1
 RNN cell composed sequentially of multiple simple cells.
 - - -
 
-#### `tf.nn.rnn_cell.MultiRNNCell.__init__(cells, state_is_tuple=False)` {#MultiRNNCell.__init__}
+#### `tf.nn.rnn_cell.MultiRNNCell.__init__(cells, state_is_tuple=True)` {#MultiRNNCell.__init__}
 
 Create a RNN cell composed sequentially of a number of RNNCells.
 
@@ -375,8 +391,9 @@ Create a RNN cell composed sequentially of a number of RNNCells.
 
 *  <b>`cells`</b>: list of RNNCells that will be composed in this order.
 *  <b>`state_is_tuple`</b>: If True, accepted and returned states are n-tuples, where
-    `n = len(cells)`.  By default (False), the states are all
-    concatenated along the column axis.
+    `n = len(cells)`.  If False, the states are all
+    concatenated along the column axis.  This latter behavior will soon be
+    deprecated.
 
 ##### Raises:
 

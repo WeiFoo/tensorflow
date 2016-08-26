@@ -22,7 +22,7 @@ limitations under the License.
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/platform/cloud/base64.h"
+#include "tensorflow/core/lib/strings/base64.h"
 #include "tensorflow/core/platform/cloud/http_request.h"
 #include "tensorflow/core/platform/env.h"
 
@@ -30,7 +30,7 @@ namespace tensorflow {
 
 namespace {
 
-// The requested lifetime of a auth bearer token.
+// The requested lifetime of an auth bearer token.
 constexpr int kRequestedTokenLifetimeSec = 3600;
 
 // The crypto algorithm to be used with OAuth.

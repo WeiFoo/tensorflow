@@ -45,7 +45,7 @@ dist.pdf(3.0)
 ```
 - - -
 
-#### `tf.contrib.distributions.StudentT.__init__(df, mu, sigma, strict=True, strict_statistics=True, name='StudentT')` {#StudentT.__init__}
+#### `tf.contrib.distributions.StudentT.__init__(df, mu, sigma, validate_args=True, allow_nan_stats=False, name='StudentT')` {#StudentT.__init__}
 
 Construct Student's t distributions.
 
@@ -57,24 +57,32 @@ broadcasting (e.g. `df + mu + sigma` is a valid operation).
 ##### Args:
 
 
-*  <b>`df`</b>: `float` or `double` tensor, the degrees of freedom of the
+*  <b>`df`</b>: Floating point tensor, the degrees of freedom of the
     distribution(s). `df` must contain only positive values.
-*  <b>`mu`</b>: `float` or `double` tensor, the means of the distribution(s).
-*  <b>`sigma`</b>: `float` or `double` tensor, the scaling factor for the
+*  <b>`mu`</b>: Floating point tensor, the means of the distribution(s).
+*  <b>`sigma`</b>: Floating point tensor, the scaling factor for the
     distribution(s). `sigma` must contain only positive values.
     Note that `sigma` is not the standard deviation of this distribution.
-*  <b>`strict`</b>: Whether to assert that `df > 0, sigma > 0`. If `strict` is False
-    and inputs are invalid, correct behavior is not guaranteed.
-*  <b>`strict_statistics`</b>: Boolean, default True.  If True, raise an exception if
-    a statistic (e.g. mean/mode/etc...) is undefined for any batch member.
-    If False, batch members with valid parameters leading to undefined
-    statistics will return NaN for this statistic.
+*  <b>`validate_args`</b>: Whether to assert that `df > 0, sigma > 0`. If
+    `validate_args` is `False` and inputs are invalid, correct behavior is
+    not guaranteed.
+*  <b>`allow_nan_stats`</b>: Boolean, default `False`.  If `False`, raise an
+    exception if a statistic (e.g. mean/mode/etc...) is undefined for any
+    batch member.  If `True`, batch members with valid parameters leading to
+    undefined statistics will return NaN for this statistic.
 *  <b>`name`</b>: The name to give Ops created by the initializer.
 
 ##### Raises:
 
 
 *  <b>`TypeError`</b>: if mu and sigma are different dtypes.
+
+
+- - -
+
+#### `tf.contrib.distributions.StudentT.allow_nan_stats` {#StudentT.allow_nan_stats}
+
+Boolean describing behavior when a stat is undefined for batch member.
 
 
 - - -
@@ -131,6 +139,63 @@ The entropy of Student t distribution(s).
 
 - - -
 
+#### `tf.contrib.distributions.StudentT.from_params(cls, make_safe=True, **kwargs)` {#StudentT.from_params}
+
+Given (unconstrained) parameters, return an instantiated distribution.
+
+Subclasses should implement a static method `_safe_transforms` that returns
+a dict of parameter transforms, which will be used if `make_safe = True`.
+
+Example usage:
+
+```
+# Let's say we want a sample of size (batch_size, 10)
+shapes = MultiVariateNormalDiag.param_shapes([batch_size, 10])
+
+# shapes has a Tensor shape for mu and sigma
+# shapes == {
+#   'mu': tf.constant([batch_size, 10]),
+#   'sigma': tf.constant([batch_size, 10]),
+# }
+
+# Here we parameterize mu and sigma with the output of a linear
+# layer. Note that sigma is unconstrained.
+params = {}
+for name, shape in shapes.items():
+  params[name] = linear(x, shape[1])
+
+# Note that you can forward other kwargs to the `Distribution`, like
+# `allow_nan_stats` or `name`.
+mvn = MultiVariateNormalDiag.from_params(**params, allow_nan_stats=True)
+```
+
+Distribution parameters may have constraints (e.g. `sigma` must be positive
+for a `Normal` distribution) and the `from_params` method will apply default
+parameter transforms. If a user wants to use their own transform, they can
+apply it externally and set `make_safe=False`.
+
+##### Args:
+
+
+*  <b>`make_safe`</b>: Whether the `params` should be constrained. If True,
+    `from_params` will apply default parameter transforms. If False, no
+    parameter transforms will be applied.
+*  <b>`**kwargs`</b>: dict of parameters for the distribution.
+
+##### Returns:
+
+  A distribution parameterized by possibly transformed parameters in
+  `kwargs`.
+
+##### Raises:
+
+
+*  <b>`TypeError`</b>: if `make_safe` is `True` but `_safe_transforms` is not
+    implemented directly for `cls`.
+
+
+- - -
+
 #### `tf.contrib.distributions.StudentT.get_batch_shape()` {#StudentT.get_batch_shape}
 
 
@@ -139,6 +204,13 @@ The entropy of Student t distribution(s).
 - - -
 
 #### `tf.contrib.distributions.StudentT.get_event_shape()` {#StudentT.get_event_shape}
+
+
+
+
+- - -
+
+#### `tf.contrib.distributions.StudentT.is_continuous` {#StudentT.is_continuous}
 
 
 
@@ -159,16 +231,23 @@ Log CDF.
 
 - - -
 
-#### `tf.contrib.distributions.StudentT.log_likelihood(value, name='log_likelihood')` {#StudentT.log_likelihood}
+#### `tf.contrib.distributions.StudentT.log_pdf(value, name='log_pdf')` {#StudentT.log_pdf}
 
-Log likelihood of this distribution (same as log_pdf).
+Log of the probability density function.
 
 
 - - -
 
-#### `tf.contrib.distributions.StudentT.log_pdf(x, name='log_pdf')` {#StudentT.log_pdf}
+#### `tf.contrib.distributions.StudentT.log_pmf(value, name='log_pmf')` {#StudentT.log_pmf}
 
-Log pdf of observations in `x` under these Student's t-distribution(s).
+Log of the probability mass function.
+
+
+- - -
+
+#### `tf.contrib.distributions.StudentT.log_prob(x, name='log_prob')` {#StudentT.log_prob}
+
+Log prob of observations in `x` under these Student's t-distribution(s).
 
 ##### Args:
 
@@ -179,7 +258,7 @@ Log pdf of observations in `x` under these Student's t-distribution(s).
 ##### Returns:
 
 
-*  <b>`log_pdf`</b>: tensor of dtype `dtype`, the log-PDFs of `x`.
+*  <b>`log_prob`</b>: tensor of dtype `dtype`, the log-PDFs of `x`.
 
 
 - - -
@@ -189,7 +268,7 @@ Log pdf of observations in `x` under these Student's t-distribution(s).
 Mean of the distribution.
 
 The mean of Student's T equals `mu` if `df > 1`, otherwise it is `NaN`.  If
-`self.strict_statistics=True`, then an exception will be raised rather than
+`self.allow_nan_stats=False`, then an exception will be raised rather than
 returning `NaN`.
 
 ##### Args:
@@ -225,7 +304,63 @@ Locations of these Student's t distribution(s).
 
 - - -
 
-#### `tf.contrib.distributions.StudentT.pdf(x, name='pdf')` {#StudentT.pdf}
+#### `tf.contrib.distributions.StudentT.param_shapes(cls, sample_shape, name='DistributionParamShapes')` {#StudentT.param_shapes}
+
+Shapes of parameters given the desired shape of a call to `sample()`.
+
+Subclasses should override static method `_param_shapes`.
+
+##### Args:
+
+
+*  <b>`sample_shape`</b>: `Tensor` or python list/tuple. Desired shape of a call to
+    `sample()`.
+*  <b>`name`</b>: name to prepend ops with.
+
+##### Returns:
+
+  `dict` of parameter name to `Tensor` shapes.
+
+
+- - -
+
+#### `tf.contrib.distributions.StudentT.param_static_shapes(cls, sample_shape)` {#StudentT.param_static_shapes}
+
+param_shapes with static (i.e. TensorShape) shapes.
+
+##### Args:
+
+
+*  <b>`sample_shape`</b>: `TensorShape` or python list/tuple. Desired shape of a call
+    to `sample()`.
+
+##### Returns:
+
+  `dict` of parameter name to `TensorShape`.
+
+##### Raises:
+
+
+*  <b>`ValueError`</b>: if `sample_shape` is a `TensorShape` and is not fully defined.
+
+
+- - -
+
+#### `tf.contrib.distributions.StudentT.pdf(value, name='pdf')` {#StudentT.pdf}
+
+The probability density function.
+
+
+- - -
+
+#### `tf.contrib.distributions.StudentT.pmf(value, name='pmf')` {#StudentT.pmf}
+
+The probability mass function.
+
+
+- - -
+
+#### `tf.contrib.distributions.StudentT.prob(x, name='prob')` {#StudentT.prob}
 
 The PDF of observations in `x` under these Student's t distribution(s).
 
@@ -239,19 +374,43 @@ The PDF of observations in `x` under these Student's t distribution(s).
 ##### Returns:
 
 
-*  <b>`pdf`</b>: tensor of dtype `dtype`, the pdf values of `x`.
+*  <b>`prob`</b>: tensor of dtype `dtype`, the prob values of `x`.
 
 
 - - -
 
-#### `tf.contrib.distributions.StudentT.sample(n, seed=None, name='sample')` {#StudentT.sample}
+#### `tf.contrib.distributions.StudentT.sample(sample_shape=(), seed=None, name='sample')` {#StudentT.sample}
+
+Generate samples of the specified shape for each batched distribution.
+
+Note that a call to `sample()` without arguments will generate a single
+sample per batched distribution.
+
+##### Args:
+
+
+*  <b>`sample_shape`</b>: Rank 1 `int32` `Tensor`. Shape of the generated samples.
+*  <b>`seed`</b>: Python integer seed for RNG
+*  <b>`name`</b>: name to give to the op.
+
+##### Returns:
+
+
+*  <b>`samples`</b>: a `Tensor` of dtype `self.dtype` and shape
+      `sample_shape + self.batch_shape + self.event_shape`.
+
+
+- - -
+
+#### `tf.contrib.distributions.StudentT.sample_n(n, seed=None, name='sample_n')` {#StudentT.sample_n}
 
 Sample `n` observations from the Student t Distributions.
 
 ##### Args:
 
 
-*  <b>`n`</b>: `Scalar`, type int32, the number of observations to sample.
+*  <b>`n`</b>: `Scalar` `Tensor` of type `int32` or `int64`, the number of
+    observations to sample.
 *  <b>`seed`</b>: Python integer, the random seed.
 *  <b>`name`</b>: The name to give this op.
 
@@ -278,16 +437,9 @@ Scaling factors of these Student's t distribution(s).
 
 - - -
 
-#### `tf.contrib.distributions.StudentT.strict` {#StudentT.strict}
+#### `tf.contrib.distributions.StudentT.validate_args` {#StudentT.validate_args}
 
 Boolean describing behavior on invalid input.
-
-
-- - -
-
-#### `tf.contrib.distributions.StudentT.strict_statistics` {#StudentT.strict_statistics}
-
-Boolean describing behavior when a stat is undefined for batch member.
 
 
 - - -
@@ -305,7 +457,7 @@ NaN, when df <= 1
 ```
 
 The NaN state occurs because mean is undefined for `df <= 1`, and if
-`self.strict_statistics` is `True`, an exception will be raised if any batch
+`self.allow_nan_stats` is `False`, an exception will be raised if any batch
 members fall into this state.
 
 ##### Args:

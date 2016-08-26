@@ -47,14 +47,22 @@ tf_kernel_library(
     name = "strided_slice_op",
     srcs = [
         "strided_slice_op.cc",
+        "strided_slice_op_inst_1.cc",
+        "strided_slice_op_inst_2.cc",
+        "strided_slice_op_inst_3.cc",
+        "strided_slice_op_inst_4.cc",
+        "strided_slice_op_inst_5.cc",
+        "strided_slice_op_inst_6.cc",
     ],
     hdrs = [
         "slice_op.h",
         "strided_slice_op.h",
+        "strided_slice_op_impl.h",
     ],
     gpu_srcs = [
         "slice_op.h",
         "strided_slice_op.h",
+        "strided_slice_op_impl.h",
         "strided_slice_op_gpu.cu.cc",
         "slice_op_gpu.cu.cc",
     ],
@@ -365,12 +373,14 @@ tf_kernel_libraries(
         "bitcast_op",
         "concat_op",
         "constant_op",
+        "debug_ops",
         "diag_op",
         "batch_matrix_band_part_op",
         "batch_matrix_diag_op",
+        "batch_matrix_set_diag_op",
         "edit_distance_op",
-        "gather_nd_op",
         "gather_op",
+        "gather_nd_op",
         "identity_op",
         "immutable_constant_op",
         "listdiff_op",
@@ -379,7 +389,6 @@ tf_kernel_libraries(
         "pack_op",
         "pad_op",
         "quantize_and_dequantize_op",
-        "random_shuffle_op",
         "reshape_op",
         "reverse_op",
         "reverse_sequence_op",
@@ -409,10 +418,12 @@ tf_kernel_libraries(
         "//tensorflow/core:array_ops_op_lib",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:framework",
+        "//tensorflow/core:gpu_runtime",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:proto_text",
         "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core/debug:debug_io_utils",
         "//third_party/eigen3",
     ],
 )
@@ -470,7 +481,7 @@ tf_cc_test(
 
 tf_cc_test(
     name = "example_parsing_ops_test",
-    size = "small",
+    size = "large",
     deps = [
         ":example_parsing_ops",
         ":ops_testutil",
@@ -502,11 +513,45 @@ tf_cuda_cc_test(
     ],
 )
 
+tf_cuda_cc_test(
+    name = "gather_nd_op_test",
+    size = "small",
+    deps = [
+        ":gather_nd_op",
+        ":ops_testutil",
+        ":ops_util",
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+    ],
+)
+
 tf_cc_test(
     name = "identity_op_test",
     size = "small",
     deps = [
         ":identity_op",
+        ":ops_testutil",
+        ":ops_util",
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+    ],
+)
+
+tf_cc_test(
+    name = "debug_ops_test",
+    size = "small",
+    deps = [
+        ":debug_ops",
         ":ops_testutil",
         ":ops_util",
         "//tensorflow/core:core_cpu",
@@ -807,6 +852,17 @@ tf_kernel_library(
     ],
 )
 
+tf_kernel_library(
+    name = "function_ops",
+    prefix = "function_ops",
+    deps = [
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:core_cpu_internal",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+    ],
+)
+
 tf_kernel_libraries(
     name = "image",
     prefixes = [
@@ -815,10 +871,12 @@ tf_kernel_libraries(
         "crop_and_resize_op",
         "decode_jpeg_op",
         "decode_png_op",
+        "decode_gif_op",
         "draw_bounding_box_op",
         "encode_jpeg_op",
         "attention_ops",
         "encode_png_op",
+        "non_max_suppression_op",
         "random_crop_op",
         "resize_area_op",
         "resize_bicubic_op",
@@ -886,6 +944,7 @@ tf_cc_tests(
         "adjust_contrast_op_test",
         "colorspace_op_test",
         "crop_and_resize_op_test",
+        "non_max_suppression_op_test",
         "resize_bicubic_op_test",
         "resize_bilinear_op_test",
         "resize_nearest_neighbor_op_test",
@@ -971,13 +1030,14 @@ tf_kernel_libraries(
         "cholesky_grad",
         "determinant_op",
         "self_adjoint_eig_op",
+        "self_adjoint_eig_v2_op",
         "matrix_inverse_op",
         "matrix_solve_ls_op",
         "matrix_solve_op",
         "matrix_triangular_solve_op",
+        "svd_op",
     ],
     deps = [
-        ":binary_linalg_ops_common",
         ":linalg_ops_common",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
@@ -986,7 +1046,6 @@ tf_kernel_libraries(
     ],
 )
 
-# TODO(josh11b): Should these two *linalg_ops_common libraries be merged?
 cc_library(
     name = "linalg_ops_common",
     srcs = ["linalg_ops_common.cc"],
@@ -994,17 +1053,7 @@ cc_library(
     visibility = ["//visibility:private"],
     deps = [
         "//tensorflow/core:framework",
-        "//third_party/eigen3",
-    ],
-)
-
-cc_library(
-    name = "binary_linalg_ops_common",
-    srcs = ["binary_linalg_ops_common.cc"],
-    hdrs = ["binary_linalg_ops_common.h"],
-    visibility = ["//visibility:private"],
-    deps = [
-        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
         "//third_party/eigen3",
     ],
 )
@@ -1016,6 +1065,7 @@ tf_kernel_libraries(
         "summary_audio_op",
         "summary_image_op",
         "summary_op",
+        "summary_tensor_op",
     ],
     deps = [
         "//tensorflow/core:framework",
@@ -1061,6 +1111,7 @@ tf_kernel_libraries(
         "matmul_op",
         "reduction_ops",
         "segment_reduction_ops",
+        "scan_ops",
         "sequence_ops",
         "sparse_matmul_op",
     ],
@@ -1277,6 +1328,7 @@ tf_kernel_library(
     name = "depthwise_conv_op",
     prefix = "depthwise_conv_op",
     deps = [
+        ":conv_ops",
         ":ops_util",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:framework",
@@ -1333,7 +1385,7 @@ tf_kernel_libraries(
     ],
 )
 
-tf_cc_test(
+tf_cuda_cc_test(
     name = "lrn_op_test",
     deps = [
         ":nn",
@@ -1505,6 +1557,7 @@ tf_kernel_libraries(
         "decode_csv_op",
         "decode_raw_op",
         "example_parsing_ops",
+        "parse_tensor_op",
         "string_to_number_op",
     ],
     deps = [
@@ -1516,10 +1569,14 @@ tf_kernel_libraries(
     ],
 )
 
-tf_kernel_library(
+tf_kernel_libraries(
     name = "random_ops",
-    prefix = "random_op",
+    prefixes = [
+        "random_op",
+        "random_shuffle_op",
+    ],
     deps = [
+        "//tensorflow/core:core_cpu",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
@@ -1532,6 +1589,7 @@ tf_cuda_cc_test(
     size = "small",
     deps = [
         ":random_ops",
+        "//tensorflow/core:core_cpu",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:test",
@@ -1562,6 +1620,7 @@ tf_kernel_libraries(
         "sparse_concat_op",
         "sparse_reduce_sum_op",
         "sparse_dense_binary_op_shared",
+        "sparse_sparse_binary_op_shared",
         "sparse_reorder_op",
         "sparse_reshape_op",
         "sparse_softmax",
@@ -1646,11 +1705,14 @@ tf_kernel_libraries(
         "string_to_hash_bucket_op",
         "reduce_join_op",
         "string_join_op",
+        "string_split_op",
         "as_string_op",
+        "base64_ops",
     ],
     deps = [
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
+        "//tensorflow/core:lib_internal",
         "//tensorflow/core:string_ops_op_lib",
     ],
 )
@@ -1706,6 +1768,32 @@ tf_cuda_cc_test(
     ],
 )
 
+tf_kernel_library(
+    name = "parameterized_truncated_normal_op",
+    prefix = "parameterized_truncated_normal_op",
+    deps = [
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:lib_internal",
+        "//tensorflow/core:random_ops_op_lib",
+    ],
+)
+
+tf_cuda_cc_test(
+    name = "parameterized_truncated_normal_op_test",
+    size = "small",
+    deps = [
+        ":ops_util",
+        ":parameterized_truncated_normal_op",
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+    ],
+)
+
 # Android libraries -----------------------------------------------------------
 
 filegroup(
@@ -1744,6 +1832,20 @@ filegroup(
         "bounds_check.h",
         "cast_op.cc",
         "cast_op.h",
+        "cast_op_impl.h",
+        "cast_op_impl_bfloat.cc",
+        "cast_op_impl_bool.cc",
+        "cast_op_impl_complex128.cc",
+        "cast_op_impl_complex64.cc",
+        "cast_op_impl_double.cc",
+        "cast_op_impl_float.cc",
+        "cast_op_impl_half.cc",
+        "cast_op_impl_int16.cc",
+        "cast_op_impl_int32.cc",
+        "cast_op_impl_int64.cc",
+        "cast_op_impl_int8.cc",
+        "cast_op_impl_uint16.cc",
+        "cast_op_impl_uint8.cc",
         "concat_lib.h",
         "concat_lib_cpu.cc",
         "concat_lib_cpu.h",
@@ -1753,11 +1855,13 @@ filegroup(
         "cwise_ops.h",
         "cwise_ops_common.cc",
         "cwise_ops_common.h",
+        "cwise_ops_gradients.h",
         "dense_update_ops.cc",
         "dense_update_ops.h",
         "example_parsing_ops.cc",
         "fill_functor.cc",
         "fill_functor.h",
+        "function_ops.cc",
         "gather_op.cc",
         "gather_op.h",
         "identity_op.cc",
@@ -1781,6 +1885,13 @@ filegroup(
         "shape_ops.cc",
         "slice_op.cc",
         "slice_op.h",
+        "slice_op_cpu_impl.h",
+        "slice_op_cpu_impl_1.cc",
+        "slice_op_cpu_impl_2.cc",
+        "slice_op_cpu_impl_3.cc",
+        "slice_op_cpu_impl_4.cc",
+        "slice_op_cpu_impl_5.cc",
+        "slice_op_cpu_impl_6.cc",
         "softmax_op.cc",
         "softmax_op.h",
         "softmax_op_functor.h",
@@ -1789,6 +1900,13 @@ filegroup(
         "split_op.cc",
         "strided_slice_op.cc",
         "strided_slice_op.h",
+        "strided_slice_op_impl.h",
+        "strided_slice_op_inst_1.cc",
+        "strided_slice_op_inst_2.cc",
+        "strided_slice_op_inst_3.cc",
+        "strided_slice_op_inst_4.cc",
+        "strided_slice_op_inst_5.cc",
+        "strided_slice_op_inst_6.cc",
         "unpack_op.cc",
         "variable_ops.cc",
         "variable_ops.h",
@@ -1819,6 +1937,7 @@ filegroup(
         "batch_norm_op.h",
         "control_flow_ops.h",
         "conv_2d.h",
+        "conv_ops.h",
         "image_resizer_state.h",
         "maxpooling_op.h",
         "pad_op.h",
@@ -1831,7 +1950,8 @@ filegroup(
         "save_restore_tensor.h",
         "softplus_op.h",
         "softsign_op.h",
-        "tile_ops.h",
+        "tile_ops_cpu_impl.h",
+        "tile_ops_impl.h",
         "training_ops.h",
         "transpose_functor.h",
         "transpose_op.h",
@@ -1910,6 +2030,12 @@ filegroup(
         "stack_ops.cc",
         "summary_op.cc",
         "tile_ops.cc",
+        "tile_ops_cpu_impl_1.cc",
+        "tile_ops_cpu_impl_2.cc",
+        "tile_ops_cpu_impl_3.cc",
+        "tile_ops_cpu_impl_4.cc",
+        "tile_ops_cpu_impl_5.cc",
+        "tile_ops_cpu_impl_6.cc",
         "topk_op.cc",
         "training_ops.cc",
         "transpose_functor_cpu.cc",
@@ -1944,7 +2070,6 @@ filegroup(
             # Ops which we are currently excluding because they are likely
             # not used on Android. Those ops also do not compile if included,
             # unless we add the additional deps they need.
-            "strided_slice_op.*",
             "tf_record_reader_op.*",
             "string_to_hash_bucket_op.*",
             "text_line_reader_op.*",
@@ -1953,12 +2078,15 @@ filegroup(
             "decode_png_op.*",
             "encode_jpeg_op.*",
             "decode_jpeg_op.*",
+            "decode_gif_op.*",
             "identity_reader_op.*",
             "reader_base.*",
             "fixed_length_record_reader_op.*",
             "whole_file_read_ops.*",
             "sample_distorted_bounding_box_op.*",
             "ctc_loss_op.*",
+            # Excluded due to experimental status:
+            "debug_ops.*",
             # Ops excluded because they do not build correctly for Android.
             # See b/29213790
             "sparse_matmul_op.*",

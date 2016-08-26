@@ -28,6 +28,7 @@ filegroup(
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_cuda_library",
+    "tf_cc_test",
 )
 load("//tensorflow:tensorflow.bzl", "tf_cuda_cc_tests")
 
@@ -91,6 +92,21 @@ cc_library(
     deps = [
         ":grpc_util",
         "//tensorflow/core:lib",
+        "//tensorflow/core:lib_internal",
+        "@grpc//:grpc++_unsecure",
+    ],
+)
+
+cc_library(
+    name = "grpc_tensor_coding",
+    srcs = ["grpc_tensor_coding.cc"],
+    hdrs = ["grpc_tensor_coding.h"],
+    deps = [
+        "//tensorflow/core:core_cpu_internal",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:framework_internal",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:worker_proto_cc",
         "@grpc//:grpc++_unsecure",
     ],
 )
@@ -135,6 +151,7 @@ cc_library(
     deps = [
         ":async_service_interface",
         ":grpc_call",
+        ":grpc_tensor_coding",
         ":grpc_util",
         ":grpc_worker_service_impl",
         "//tensorflow/core:core_cpu_internal",
@@ -143,12 +160,10 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:worker_proto_cc",
-        "//tensorflow/core/distributed_runtime:call_options",
         "//tensorflow/core/distributed_runtime:graph_mgr",
         "//tensorflow/core/distributed_runtime:rendezvous_mgr_interface",
         "//tensorflow/core/distributed_runtime:worker_cache",
         "//tensorflow/core/distributed_runtime:worker_env",
-        "//tensorflow/core/distributed_runtime:worker_interface",
         "@grpc//:grpc++_unsecure",
     ],
 )
@@ -160,6 +175,7 @@ cc_library(
     deps = [
         ":grpc_serialization_traits",
         "//tensorflow/core:worker_proto_cc",
+        "//tensorflow/core/distributed_runtime:worker_interface",
         "@grpc//:grpc++_unsecure",
     ],
 )
@@ -378,6 +394,25 @@ tf_cuda_cc_tests(
         "//tensorflow/core:test_main",
         "//tensorflow/core:testlib",
         "//tensorflow/core/distributed_runtime:server_lib",
+    ],
+)
+
+tf_cc_test(
+    name = "grpc_tensor_coding_test",
+    size = "small",
+    deps = [
+        ":grpc_tensor_coding",
+        ":grpc_testlib",
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:core_cpu_internal",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+        "//tensorflow/core:worker_proto_cc",
+        "@grpc//:grpc++_unsecure",
     ],
 )
 

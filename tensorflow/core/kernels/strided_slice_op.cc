@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "tensorflow/core/kernels/strided_slice_op.h"
 #include "tensorflow/core/kernels/slice_op.h"
+#include "tensorflow/core/kernels/strided_slice_op_impl.h"
 
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -41,17 +42,24 @@ namespace {
 /// Constants
 constexpr int32 kShrinkAxis = -1, kNewAxis = -2;
 
+// Sparse slicing specification
+// if one does foo[3:5, ..., -3], this will have 3 length tensors
 struct StridedSliceSparseSpec {
   int64 dims;
-  int32 num_add_axis_after_ellipse;
+  int32 num_add_axis_after_ellipsis;
   const Tensor& begin_tensor;
   const Tensor& end_tensor;
   const Tensor& strides_tensor;
   const int32 begin_mask, end_mask;
-  int32 ellipse_mask;
+  int32 ellipsis_mask;
   const int32 new_axis_mask, shrink_axis_mask;
 };
 
+// Dense slicing specification
+// all ellipses and newaxis' are expanded out. So if
+// foo[3:5, ..., -3] where foo is 10 dimensional,
+// each inlinedVector will have 10 entries whereas the
+// sparse had 3 length tensors.
 struct StridedSliceDenseSpec {
   const int64 dims;
   int32 begin_mask;
@@ -59,7 +67,18 @@ struct StridedSliceDenseSpec {
   gtl::InlinedVector<int64, 4>& begin;
   gtl::InlinedVector<int64, 4>& end;
   gtl::InlinedVector<int64, 4>& strides;
+  // This vector helps construct the final shape of the slice.
+  // The final tensor is reduced in rank whenever a single index e.g. foo[3]
+  // is called for. The final tensor increases in rank with tf.newaxis
+  // entries. If an index in this array is positive, the size of the dimension
+  // is obtained from canonical end-begin. Otherwise, if it is a kNewAxis,
+  // it will be 1. A shrunk dimension is skipped.
   gtl::InlinedVector<int32, 4> final_shape_gather_indices;
+  // The dense indexed shrink mask is which processing dimensions
+  // should be shrunk. For example, if foo.shape = (10,10,10,10)
+  // foo[3, ..., 5] has sparse_shrink_axis_mask of 0x5 and
+  // dense_shrink_axis_mask of 0x9, yielding a final shape (10,10).
+  int32 shrink_axis_mask;
 };
 
 }  // namespace
@@ -78,6 +97,7 @@ static void BuildDenseSpec(const StridedSliceSparseSpec& sparse,
   // What indices to get the final shape from.
   dense->begin_mask = 0;
   dense->end_mask = 0;
+  dense->shrink_axis_mask = 0;
   {
     int full_index = 0;
 
@@ -86,11 +106,11 @@ static void BuildDenseSpec(const StridedSliceSparseSpec& sparse,
     const auto& strides_flat = sparse.strides_tensor.flat<T>();
 
     for (int i = 0; i < sparse.dims; i++) {
-      if ((1 << i) & sparse.ellipse_mask) {
+      if ((1 << i) & sparse.ellipsis_mask) {
         // Expand the ellipsis into the appropriate indices
         // NOTE: this only works because we guaranteed one ellipsis
         int32 next_index = std::min(dense->dims - (sparse.dims - i) + 1 +
-                                        sparse.num_add_axis_after_ellipse,
+                                        sparse.num_add_axis_after_ellipsis,
                                     dense->dims);
         for (; full_index < next_index; full_index++) {
           // new_axis' aren't real axis so you have to skip
@@ -114,9 +134,15 @@ static void BuildDenseSpec(const StridedSliceSparseSpec& sparse,
         if (sparse.end_mask & (1 << i)) {
           dense->end_mask |= (1 << full_index);
         }
-        // If shrink, use the shrink code, otherwise use the real value
-        dense->final_shape_gather_indices.push_back(
-            (sparse.shrink_axis_mask & (1 << i)) ? kShrinkAxis : full_index);
+        // If shrink, record where to get the dimensionality from (i.e.
+        // new_axis creates a fake 1 size dimension. Also remember shrink
+        // axis (now in dense form) so we can ignore dense->end below.
+        if (sparse.shrink_axis_mask & (1 << i)) {
+          dense->final_shape_gather_indices.push_back(kShrinkAxis);
+          dense->shrink_axis_mask |= (1 << full_index);
+        } else {
+          dense->final_shape_gather_indices.push_back(full_index);
+        }
         full_index++;
       }
     }
@@ -127,7 +153,7 @@ static void BuildDenseSpec(const StridedSliceSparseSpec& sparse,
 // code size by not duplicating all this for all T (float, double, int32, etc.)
 static void SharedValidation(
     OpKernelContext* context, const TensorShape& input_shape,
-    int32 begin_mask_spec, int32 end_mask_spec, const int32 ellipse_mask,
+    int32 begin_mask_spec, int32 end_mask_spec, const int32 ellipsis_mask,
     int32 new_axis_mask, int32 shrink_axis_mask, TensorShape* processing_shape,
     TensorShape* final_shape, bool* is_identity, bool* is_simple_slice,
     bool* slice_dim0, gtl::InlinedVector<int64, 4>* begin,
@@ -150,19 +176,19 @@ static void SharedValidation(
           "but got shapes ", begin_tensor.shape().DebugString(), ", ",
           end_tensor.shape().DebugString(), ", and ",
           strides_tensor.shape().DebugString(), " instead."));
-  // Use bit compares to ensure ellipse_mask is 0 or a power of 2
+  // Use bit compares to ensure ellipsis_mask is 0 or a power of 2
   // i.e. there exists only no more than one ellipsis
   OP_REQUIRES(context,
-              !ellipse_mask || (ellipse_mask & (ellipse_mask - 1)) == 0,
+              !ellipsis_mask || (ellipsis_mask & (ellipsis_mask - 1)) == 0,
               errors::InvalidArgument("Multiple ellipsis' in slice "
                                       "spec not allowed"));
 
-  // Step 1: Account for ellipses and new axis
+  // Step 1: Account for ellipsis and new axis
   //
   // Check for ellipses and count how many non-newaxis' there are after
   // TODO(aselle): Convert this to do a fast log2 followed by iteration
   //               counting ones in next guys
-  bool ellipse_seen = false;
+  bool ellipsis_seen = false;
 
   StridedSliceSparseSpec sparse_spec = {begin_tensor.NumElements(),
                                         0,
@@ -171,21 +197,21 @@ static void SharedValidation(
                                         strides_tensor,
                                         begin_mask_spec,
                                         end_mask_spec,
-                                        ellipse_mask,
+                                        ellipsis_mask,
                                         new_axis_mask,
                                         shrink_axis_mask};
 
   for (int32 i = 0; i < sparse_spec.dims; i++) {
-    if (ellipse_seen && ((1 << i) & new_axis_mask) != 0) {
-      sparse_spec.num_add_axis_after_ellipse++;
+    if (ellipsis_seen && ((1 << i) & new_axis_mask) != 0) {
+      sparse_spec.num_add_axis_after_ellipsis++;
     }
-    if ((1 << i) & ellipse_mask) {
-      ellipse_seen = true;
+    if ((1 << i) & ellipsis_mask) {
+      ellipsis_seen = true;
     }
   }
   // If no ellipsis insert one at the end
-  if (!ellipse_seen) {
-    sparse_spec.ellipse_mask |= (1 << sparse_spec.dims);
+  if (!ellipsis_seen) {
+    sparse_spec.ellipsis_mask |= (1 << sparse_spec.dims);
     sparse_spec.dims++;  // this effects loop iteration below
   }
 
@@ -237,8 +263,25 @@ static void SharedValidation(
                    : x_fwd > valid_range[1] ? valid_range[1] : x_fwd;
       }
     };
-    begin_i = canonical(begin_i, 0);
-    end_i = canonical(end_i, 1);
+    if (dense_spec.shrink_axis_mask & (1 << i)) {
+      // If we are shrinking, the end index is now possibly incorrect. In
+      // particular foo[-1] produces sparse_begin = -1, sparse_end = 0.
+      // and canonical puts these to n-1 and 0, which implies a degenerate
+      // interval. Fortunately, it is now safe to re-create end as begin+1.
+      int64 x_fwd = begin_i < 0 ? dim_i + begin_i : begin_i;
+      begin_i = x_fwd;
+      end_i = begin_i + 1;
+      OP_REQUIRES(context, stride_i > 0,
+                  errors::InvalidArgument("only stride 1 allowed on"
+                                          " non-range indexing."));
+      OP_REQUIRES(
+          context, x_fwd >= 0 && x_fwd < dim_i,
+          errors::InvalidArgument("slice index ", begin_i, " of dimension ", i,
+                                  " out of bounds."));
+    } else {
+      begin_i = canonical(begin_i, 0);
+      end_i = canonical(end_i, 1);
+    }
     // Update optimization values
     (*is_simple_slice) &= stride_i == 1;
     bool take_all_in_dimension =
@@ -277,7 +320,7 @@ class StridedSliceOp : public OpKernel {
   explicit StridedSliceOp(OpKernelConstruction* context) : OpKernel(context) {
     OP_REQUIRES_OK(context, context->GetAttr("begin_mask", &begin_mask));
     OP_REQUIRES_OK(context, context->GetAttr("end_mask", &end_mask));
-    OP_REQUIRES_OK(context, context->GetAttr("ellipse_mask", &ellipse_mask));
+    OP_REQUIRES_OK(context, context->GetAttr("ellipsis_mask", &ellipsis_mask));
     OP_REQUIRES_OK(context, context->GetAttr("new_axis_mask", &new_axis_mask));
     OP_REQUIRES_OK(context,
                    context->GetAttr("shrink_axis_mask", &shrink_axis_mask));
@@ -293,7 +336,7 @@ class StridedSliceOp : public OpKernel {
     gtl::InlinedVector<int64, 4> strides;
 
     SharedValidation(context, context->input(0).shape(), begin_mask, end_mask,
-                     ellipse_mask, new_axis_mask, shrink_axis_mask,
+                     ellipsis_mask, new_axis_mask, shrink_axis_mask,
                      &processing_shape, &final_shape, &is_identity,
                      &is_simple_slice, &slice_dim0, &begin, &end, &strides);
     if (!context->status().ok()) return;
@@ -325,33 +368,35 @@ class StridedSliceOp : public OpKernel {
     if (processing_shape.num_elements() > 0) {
       // Optimization #3, slice has stride 1 in all dimensions
       // Optimization #3A, slice has only two dimensions
-      // TODO(aselle): Here we are restricting to processing_shape being
-      // 2D. this isn't strictly necessary, but I don't want to blow up
-      // the code gen size, because to shape<> you need static NDIM and T
+      // TODO(aselle): Here we are restricting to processing_shape and
+      // final_shape being 2D. This isn't strictly necessary, but I don't
+      // want to blow up code gen size, because to shape<> you need static
+      // NDIM and T
       if (is_simple_slice && std::is_same<Device, CPUDevice>::value &&
-          input_dims == 2 && processing_shape.num_elements() == 2 &&
+          input_dims == 2 && processing_shape.dims() == 2 &&
+          final_shape.dims() == 2 &&
           DataTypeCanUseMemcpy(DataTypeToEnum<T>::v())) {
-        auto input = context->input(0).tensor<T, 2>();
+        auto in = input.tensor<T, 2>();
         auto output = result->tensor<T, 2>();
         // TODO(agarwal): Consider multi-threading if size[0] is large
         for (int row_in = begin[0], row_out = 0; row_in < end[0];
              ++row_in, ++row_out) {
           if (row_in + 1 < end[0]) {
             port::prefetch<port::PREFETCH_HINT_T0>(&output(row_in + 1, 0));
-            port::prefetch<port::PREFETCH_HINT_T0>(
-                &input(row_in + 1, begin[1]));
+            port::prefetch<port::PREFETCH_HINT_T0>(&in(row_in + 1, begin[1]));
           }
-          memcpy(&output(row_out, 0), &input(row_in, begin[1]),
+          memcpy(&output(row_out, 0), &in(row_in, begin[1]),
                  (end[1] - begin[1]) * sizeof(T));
         }
         return;
       }
 
-#define HANDLE_DIM(NDIM)                                             \
-  if (processing_dims == NDIM) {                                     \
-    HandleCase<NDIM>(context, begin, end, strides, processing_shape, \
-                     is_simple_slice, result);                       \
-    return;                                                          \
+#define HANDLE_DIM(NDIM)                                                       \
+  if (processing_dims == NDIM) {                                               \
+    HandleStridedSliceCase<Device, T, NDIM>(context, begin, end, strides,      \
+                                            processing_shape, is_simple_slice, \
+                                            result);                           \
+    return;                                                                    \
   }
 
       HANDLE_DIM(1);
@@ -370,42 +415,8 @@ class StridedSliceOp : public OpKernel {
   }
 
  private:
-  template <int NDIM>
-  void HandleCase(OpKernelContext* context, const gtl::ArraySlice<int64>& begin,
-                  const gtl::ArraySlice<int64>& end,
-                  const gtl::ArraySlice<int64>& strides,
-                  const TensorShape& processing_shape, bool is_simple_slice,
-                  Tensor* result) {
-    gtl::InlinedVector<int64, 4> processing_dims = processing_shape.dim_sizes();
-    if (is_simple_slice) {
-      Eigen::DSizes<Eigen::DenseIndex, NDIM> begin_di;
-      Eigen::DSizes<Eigen::DenseIndex, NDIM> sizes_di;
-      for (int i = 0; i < NDIM; ++i) {
-        begin_di[i] = begin[i];
-        sizes_di[i] = end[i] - begin[i];
-      }
-      functor::Slice<Device, T, NDIM>()(
-          context->eigen_device<Device>(),
-          result->shaped<T, NDIM>(processing_dims),
-          context->input(0).tensor<T, NDIM>(), begin_di, sizes_di);
-    } else {
-      Eigen::DSizes<Eigen::DenseIndex, NDIM> begin_di;
-      Eigen::DSizes<Eigen::DenseIndex, NDIM> end_di;
-      Eigen::DSizes<Eigen::DenseIndex, NDIM> strides_di;
-      for (int i = 0; i < NDIM; ++i) {
-        begin_di[i] = begin[i];
-        end_di[i] = end[i];
-        strides_di[i] = strides[i];
-      }
-      functor::StridedSlice<Device, T, NDIM>()(
-          context->eigen_device<Device>(),
-          result->shaped<T, NDIM>(processing_dims),
-          context->input(0).tensor<T, NDIM>(), begin_di, end_di, strides_di);
-    }
-  }
-
   int32 begin_mask, end_mask;
-  int32 ellipse_mask, new_axis_mask, shrink_axis_mask;
+  int32 ellipsis_mask, new_axis_mask, shrink_axis_mask;
 };
 
 template <typename Device, typename T>
@@ -415,7 +426,7 @@ class StridedSliceGradOp : public OpKernel {
       : OpKernel(context) {
     OP_REQUIRES_OK(context, context->GetAttr("begin_mask", &begin_mask));
     OP_REQUIRES_OK(context, context->GetAttr("end_mask", &end_mask));
-    OP_REQUIRES_OK(context, context->GetAttr("ellipse_mask", &ellipse_mask));
+    OP_REQUIRES_OK(context, context->GetAttr("ellipsis_mask", &ellipsis_mask));
     OP_REQUIRES_OK(context, context->GetAttr("new_axis_mask", &new_axis_mask));
     OP_REQUIRES_OK(context,
                    context->GetAttr("shrink_axis_mask", &shrink_axis_mask));
@@ -436,13 +447,29 @@ class StridedSliceGradOp : public OpKernel {
         context, input_shape_tensor.dims() == 1,
         errors::InvalidArgument("shape must be 1-D, got shape.shape = ",
                                 input_shape_tensor.shape().DebugString()));
-    OP_REQUIRES_OK(context, TensorShapeUtils::MakeShape(
-                                input_shape_tensor.vec<int32>(), &input_shape));
+    if (input_shape_tensor.dtype() == DT_INT32) {
+      OP_REQUIRES_OK(
+          context, TensorShapeUtils::MakeShape(input_shape_tensor.vec<int32>(),
+                                               &input_shape));
+    } else if (input_shape_tensor.dtype() == DT_INT64) {
+      OP_REQUIRES_OK(
+          context, TensorShapeUtils::MakeShape(input_shape_tensor.vec<int64>(),
+                                               &input_shape));
+    } else {
+      LOG(FATAL) << "shape must have type int32 or int64.";
+    }
 
-    SharedValidation(context, input_shape, begin_mask, end_mask, ellipse_mask,
+    SharedValidation(context, input_shape, begin_mask, end_mask, ellipsis_mask,
                      new_axis_mask, shrink_axis_mask, &processing_shape,
                      &final_shape, &is_identity, &is_simple_slice, &slice_dim0,
                      &begin, &end, &strides);
+
+    // Check to make sure dy is consistent with the original slice
+    TensorShape dy_shape = context->input(4).shape();
+    OP_REQUIRES(
+        context, final_shape == dy_shape,
+        errors::InvalidArgument("shape of dy was ", dy_shape.DebugString(),
+                                " instead of ", final_shape.DebugString()));
 
     if (!context->status().ok()) return;
 
@@ -451,11 +478,12 @@ class StridedSliceGradOp : public OpKernel {
     Tensor* result = nullptr;
     OP_REQUIRES_OK(context, context->allocate_output(0, input_shape, &result));
 
-#define HANDLE_DIM(NDIM)                                                 \
-  if (processing_dims == NDIM) {                                         \
-    HandleGradCase<NDIM>(context, begin, end, strides, processing_shape, \
-                         is_simple_slice, result);                       \
-    return;                                                              \
+#define HANDLE_DIM(NDIM)                                                      \
+  if (processing_dims == NDIM) {                                              \
+    HandleStridedSliceGradCase<Device, T, NDIM>(context, begin, end, strides, \
+                                                processing_shape,             \
+                                                is_simple_slice, result);     \
+    return;                                                                   \
   }
 
     HANDLE_DIM(1);
@@ -469,31 +497,8 @@ class StridedSliceGradOp : public OpKernel {
   }
 
  private:
-  template <int NDIM>
-  void HandleGradCase(OpKernelContext* context,
-                      const gtl::ArraySlice<int64>& begin,
-                      const gtl::ArraySlice<int64>& end,
-                      const gtl::ArraySlice<int64>& strides,
-                      const TensorShape& processing_shape, bool is_simple_slice,
-                      Tensor* result) {
-    gtl::InlinedVector<int64, 4> processing_dims = processing_shape.dim_sizes();
-
-    Eigen::DSizes<Eigen::DenseIndex, NDIM> begin_di;
-    Eigen::DSizes<Eigen::DenseIndex, NDIM> end_di;
-    Eigen::DSizes<Eigen::DenseIndex, NDIM> strides_di;
-    for (int i = 0; i < NDIM; ++i) {
-      begin_di[i] = begin[i];
-      end_di[i] = end[i];
-      strides_di[i] = strides[i];
-    }
-    functor::StridedSliceGrad<Device, T, NDIM>()(
-        context->eigen_device<Device>(), result->tensor<T, NDIM>(),
-        context->input(4).shaped<T, NDIM>(processing_dims), begin_di, end_di,
-        strides_di);
-  }
-
   int32 begin_mask, end_mask;
-  int32 ellipse_mask, new_axis_mask, shrink_axis_mask;
+  int32 ellipsis_mask, new_axis_mask, shrink_axis_mask;
 };
 
 #define REGISTER_STRIDED_SLICE(type)                       \
@@ -507,6 +512,7 @@ class StridedSliceGradOp : public OpKernel {
   REGISTER_KERNEL_BUILDER(Name("StridedSliceGrad")         \
                               .Device(DEVICE_CPU)          \
                               .TypeConstraint<type>("T")   \
+                              .HostMemory("shape")         \
                               .HostMemory("begin")         \
                               .HostMemory("end")           \
                               .HostMemory("strides"),      \
@@ -518,49 +524,6 @@ REGISTER_STRIDED_SLICE(bfloat16);
 #undef REGISTER_STRIDED_SLICE
 
 #if GOOGLE_CUDA
-// Forward declarations of the functor specializations for GPU.
-// NOTE: This prevents errant implicit instantiations of incorrect
-// type. See the _gpu.cu.cc
-namespace functor {
-#define DECLARE_GPU_SPEC(T, NDIM)                                  \
-  template <>                                                      \
-  void StridedSlice<GPUDevice, T, NDIM>::operator()(               \
-      const GPUDevice& d, typename TTypes<T, NDIM>::Tensor output, \
-      typename TTypes<T, NDIM>::ConstTensor input,                 \
-      const Eigen::DSizes<Eigen::DenseIndex, NDIM>& start,         \
-      const Eigen::DSizes<Eigen::DenseIndex, NDIM>& stop,          \
-      const Eigen::DSizes<Eigen::DenseIndex, NDIM>& strides);      \
-  extern template struct StridedSlice<GPUDevice, T, NDIM>;         \
-  template <>                                                      \
-  void Slice<GPUDevice, T, NDIM>::operator()(                      \
-      const GPUDevice& d, typename TTypes<T, NDIM>::Tensor output, \
-      typename TTypes<T, NDIM>::ConstTensor input,                 \
-      const Eigen::DSizes<Eigen::DenseIndex, NDIM>& indices,       \
-      const Eigen::DSizes<Eigen::DenseIndex, NDIM>& sizes);        \
-  extern template struct Slice<GPUDevice, T, NDIM>;                \
-  template <>                                                      \
-  void StridedSliceGrad<GPUDevice, T, NDIM>::operator()(           \
-      const GPUDevice& d, typename TTypes<T, NDIM>::Tensor output, \
-      typename TTypes<T, NDIM>::ConstTensor input,                 \
-      const Eigen::DSizes<Eigen::DenseIndex, NDIM>& start,         \
-      const Eigen::DSizes<Eigen::DenseIndex, NDIM>& stop,          \
-      const Eigen::DSizes<Eigen::DenseIndex, NDIM>& strides);      \
-  extern template struct StridedSliceGrad<GPUDevice, T, NDIM>;
-
-#define DECLARE_FOR_N(T)  \
-  DECLARE_GPU_SPEC(T, 1); \
-  DECLARE_GPU_SPEC(T, 2); \
-  DECLARE_GPU_SPEC(T, 3); \
-  DECLARE_GPU_SPEC(T, 4); \
-  DECLARE_GPU_SPEC(T, 5); \
-  DECLARE_GPU_SPEC(T, 6);
-
-TF_CALL_GPU_NUMBER_TYPES(DECLARE_FOR_N);
-DECLARE_FOR_N(int32);
-
-#undef DECLARE_FOR_N
-#undef DECLARE_GPU_SPEC
-}  // namespace functor
 
 #define REGISTER_GPU(type)                                     \
   REGISTER_KERNEL_BUILDER(Name("StridedSlice")                 \
@@ -574,6 +537,7 @@ DECLARE_FOR_N(int32);
   REGISTER_KERNEL_BUILDER(Name("StridedSliceGrad")             \
                               .Device(DEVICE_GPU)              \
                               .TypeConstraint<type>("T")       \
+                              .HostMemory("shape")             \
                               .HostMemory("begin")             \
                               .HostMemory("end")               \
                               .HostMemory("strides")           \

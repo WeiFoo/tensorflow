@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-// DEPRECATED: Use GraphDefBuilder instead.
+// DEPRECATED: Use the C++ API defined in tensorflow/cc instead.
 
 #ifndef TENSORFLOW_GRAPH_TESTLIB_H_
 #define TENSORFLOW_GRAPH_TESTLIB_H_
@@ -51,6 +51,8 @@ Node* HostConstant(Graph* g, const Tensor& tensor, const string& name);
 
 // Adds a variable in "g" of the given "shape" and "dtype".
 Node* Var(Graph* g, const DataType dtype, const TensorShape& shape);
+Node* Var(Graph* g, const DataType dtype, const TensorShape& shape,
+          const string& name);
 
 // Adds an assign node in "g" which assigns "val" into "var".
 Node* Assign(Graph* g, Node* var, Node* val);
@@ -181,6 +183,9 @@ Node* Relu6(Graph* g, Node* in);
 
 // Add a BiasAdd node in "g".
 Node* BiasAdd(Graph* g, Node* value, Node* bias);
+
+// Add a Conv2D node in "g".
+Node* Conv2D(Graph* g, Node* in0, Node* in1);
 
 }  // end namespace graph
 }  // end namespace test

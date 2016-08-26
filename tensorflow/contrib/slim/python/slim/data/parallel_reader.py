@@ -22,6 +22,7 @@ from tensorflow.python.framework import dtypes as tf_dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import data_flow_ops
 from tensorflow.python.ops import io_ops
+from tensorflow.python.ops import logging_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.platform import gfile
 from tensorflow.python.training import input as tf_input
@@ -184,7 +185,7 @@ def parallel_read(data_sources,
 
   Args:
     data_sources: a list/tuple of files or the location of the data, i.e.
-      /cns/../train@128, /cns/.../train* or /tmp/.../train*
+      /path/to/train@128, /path/to/train* or /tmp/.../train*
     reader_class: one of the io_ops.ReaderBase subclasses ex: TFRecordReader
     num_epochs: The number of times each data source is read. If left as None,
         the data will be cycled through indefinitely.
@@ -215,6 +216,11 @@ def parallel_read(data_sources,
     else:
       common_queue = data_flow_ops.FIFOQueue(capacity=capacity, dtypes=dtypes)
 
+    logging_ops.scalar_summary('queue/%s/fraction_of_%d_full' %
+                               (common_queue.name, capacity),
+                               math_ops.to_float(common_queue.size()) *
+                               (1. / capacity))
+
     return ParallelReader(reader_class,
                           common_queue,
                           num_readers=num_readers,
@@ -228,7 +234,7 @@ def single_pass_read(data_sources,
 
   Args:
     data_sources: a list/tuple of files or the location of the data, i.e.
-      /cns/../train@128, /cns/.../train* or /tmp/.../train*
+      /path/to/train@128, /path/to/train* or /tmp/.../train*
     reader_class: one of the io_ops.ReaderBase subclasses ex: TFRecordReader.
     reader_kwargs: an optional dict, of kwargs for the reader.
 
@@ -250,7 +256,7 @@ def get_data_files(data_sources):
 
   Args:
     data_sources: a list/tuple of files or the location of the data, i.e.
-      /cns/../train@128, /cns/.../train* or /tmp/.../train*
+      /path/to/train@128, /path/to/train* or /tmp/.../train*
 
   Returns:
     a list of data_files.

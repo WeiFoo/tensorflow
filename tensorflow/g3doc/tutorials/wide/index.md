@@ -16,7 +16,7 @@ To try the code for this tutorial:
 already.
 
 2.  Download [the tutorial code](
-https://www.tensorflow.org/code/tensorflow/examples/learn/wide_n_deep_tutorial.py).
+https://github.com/tensorflow/tensorflow/blob/master/tensorflow/examples/learn/wide_n_deep_tutorial.py).
 
 3.  Install the pandas data analysis library. tf.learn doesn't require pandas, but it does support it, and this tutorial uses pandas. To install pandas:
     1. Get `pip`:
@@ -157,7 +157,7 @@ In more detail, the Input Builder function returns the following as a pair:
     `SparseTensors`.
 2.  `label`: A `Tensor` containing the label column.
 
-The keys of the `feature_cols` will be used to when construct columns in the
+The keys of the `feature_cols` will be used to construct columns in the
 next section. Because we want to call the `fit` and `evaluate` methods with
 different data, we define two different input builder functions,
 `train_input_fn` and `test_input_fn` which are identical except that they pass
@@ -392,7 +392,7 @@ transformations and see if you can do even better!
 
 If you'd like to see a working end-to-end example, you can download our [example
 code]
-(https://www.tensorflow.org/code/tensorflow/examples/learn/wide_n_deep_tutorial.py)
+(https://github.com/tensorflow/tensorflow/blob/master/tensorflow/examples/learn/wide_n_deep_tutorial.py)
 and set the `model_type` flag to `wide`.
 
 ## Adding Regularization to Prevent Overfitting

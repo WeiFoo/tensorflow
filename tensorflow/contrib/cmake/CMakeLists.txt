@@ -39,6 +39,7 @@ set (DOWNLOAD_LOCATION "${CMAKE_CURRENT_BINARY_DIR}/downloads"
 mark_as_advanced(DOWNLOAD_LOCATION)
 
 # External dependencies
+include(gif)
 include(png)
 include(jpeg)
 include(re2)
@@ -50,7 +51,8 @@ include(highwayhash)
 
 # Let's get to work!
 include(tf_core_framework.cmake)
-include(tf_stream_executor.cmake)
+# NOTE: Disabled until issue #3996 is fixed.
+# include(tf_stream_executor.cmake)
 include(tf_core_cpu.cmake)
 include(tf_models.cmake)
 include(tf_core_ops.cmake)

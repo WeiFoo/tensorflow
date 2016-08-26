@@ -453,6 +453,21 @@ class Stream {
                         const DeviceMemory<float> &input_data,
                         DeviceMemory<float> *output_data);
 
+  // Similar to ThenNormalize, but normalizes across feature maps and allows for
+  // specifying the dimensions of the tensor.
+  Stream &ThenNormalizeWithDimensions(
+      const dnn::NormalizeDescriptor &normalize_descriptor,
+      const dnn::BatchDescriptor &dimensions,
+      const DeviceMemory<float> &input_data, DeviceMemory<float> *output_data);
+
+  Stream &ThenNormalizeBackwardWithDimensions(
+      const dnn::NormalizeDescriptor &normalize_descriptor,
+      const dnn::BatchDescriptor &dimensions,
+      const DeviceMemory<float> &raw_data,
+      const DeviceMemory<float> &normalized_data,
+      const DeviceMemory<float> &normalized_variable_gradient,
+      DeviceMemory<float> *raw_variable_gradient);
+
   Stream &ThenActivate(dnn::ActivationMode activation_mode,
                        const dnn::BatchDescriptor &dimensions,
                        const DeviceMemory<float> &input_data,
@@ -1367,6 +1382,51 @@ class Stream {
   // by 4). The location must not be null.
   Stream &ThenMemset32(DeviceMemoryBase *location, const uint32 &pattern,
                        uint64 size);
+
+  // Enqueue a forward operation of the RNN model onto the stream.
+  // See DnnSupport::DoRnnForward for more details.
+  Stream &ThenRnnForward(const dnn::RnnDescriptor &rnn_desc,
+                         const dnn::RnnSequenceTensorDescriptor &input_desc,
+                         const DeviceMemory<float> &input_data,
+                         const dnn::RnnStateTensorDescriptor &input_h_desc,
+                         const DeviceMemory<float> &input_h_data,
+                         const dnn::RnnStateTensorDescriptor &input_c_desc,
+                         const DeviceMemory<float> &input_c_data,
+                         const DeviceMemory<float> &params,
+                         const dnn::RnnSequenceTensorDescriptor &output_desc,
+                         DeviceMemory<float> *output_data,
+                         const dnn::RnnStateTensorDescriptor &output_h_desc,
+                         DeviceMemory<float> *output_h_data,
+                         const dnn::RnnStateTensorDescriptor &output_c_desc,
+                         DeviceMemory<float> *output_c_data, bool is_training,
+                         ScratchAllocator *reserve_space_allocator,
+                         ScratchAllocator *workspace_allocator);
+
+  // Enqueue a backward operation of the RNN model onto the stream.
+  // See DnnSupport::DoRnnBackward for more details.
+  Stream &ThenRnnBackward(const dnn::RnnDescriptor &rnn_desc,
+                          const dnn::RnnSequenceTensorDescriptor &input_desc,
+                          const DeviceMemory<float> &input_data,
+                          const dnn::RnnStateTensorDescriptor &input_h_desc,
+                          const DeviceMemory<float> &input_h_data,
+                          const dnn::RnnStateTensorDescriptor &input_c_desc,
+                          const DeviceMemory<float> &input_c_data,
+                          const DeviceMemory<float> &params,
+                          const dnn::RnnSequenceTensorDescriptor &output_desc,
+                          const DeviceMemory<float> &output_data,
+                          const dnn::RnnStateTensorDescriptor &output_h_desc,
+                          const DeviceMemory<float> &output_h_data,
+                          const dnn::RnnStateTensorDescriptor &output_c_desc,
+                          const DeviceMemory<float> &output_c_data,
+                          const DeviceMemory<float> &output_backprop_data,
+                          const DeviceMemory<float> &output_h_backprop_data,
+                          const DeviceMemory<float> &output_c_backprop_data,
+                          DeviceMemory<float> *input_backprop_data,
+                          DeviceMemory<float> *input_h_backprop_data,
+                          DeviceMemory<float> *input_c_backprop_data,
+                          DeviceMemory<float> *params_backprop_data,
+                          DeviceMemory<uint8> *reserve_space_data,
+                          ScratchAllocator *workspace_allocator);
 
   // (Synchronously) block the host code waiting for the operations
   // entrained on the stream (enqueued to this point in program

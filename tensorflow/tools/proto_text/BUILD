@@ -34,7 +34,7 @@ cc_binary(
     visibility = ["//tensorflow:internal"],
     deps = [
         ":gen_proto_text_functions_lib",
-        "//tensorflow/core:lib",
+        "//tensorflow/core:lib_proto_parsing",
     ],
 )
 
@@ -47,10 +47,10 @@ cc_library(
         "-lpthread",
     ] + select({
         "//tensorflow:darwin": [],
-        "//conditions:default": ["-lrt"]
-    }),    
+        "//conditions:default": ["-lrt"],
+    }),
     deps = [
-        "//tensorflow/core:lib",
+        "//tensorflow/core:lib_proto_parsing",
     ],
 )
 

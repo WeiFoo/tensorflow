@@ -201,12 +201,6 @@ class Barrier : public ResourceBase {
       if (closed_) {
         int available_elements = ready_size();
         if (allow_small_batch) {
-          // TODO(ebrevdo): race condition here.  two threads call
-          // TryTakeMany with allow_small_batch; both see ready_size()
-          // available elements.  Both try to get the same number of
-          // elements.  One blocks.  Perhaps add option
-          // allow_small_batch to PriorityQueue dequeuemany??
-
           // We want to deliver a maximum of num_elements, if there are less
           // elements available, we deliver at most the available_elements. If
           // there are no
@@ -217,7 +211,9 @@ class Barrier : public ResourceBase {
           // We're happy to wait for additional elements to be completed.
           available_elements += incomplete_.size();
         }
-        if (available_elements < num_elements_to_deliver) {
+        // If there are 0 available elements or less elements than the
+        // number we can deliver, then we are done.
+        if (available_elements < std::max(num_elements_to_deliver, 1)) {
           ctx->SetStatus(errors::OutOfRange(
               "Barrier '", name_, "' is closed and has ",
               "insufficient elements (requested ", num_elements_to_deliver,
@@ -354,7 +350,8 @@ class Barrier : public ResourceBase {
         element.push_back(PersistentTensor(uninitialized));
       }
     }
-    if (element[1 + component_index].IsInitialized()) {
+    const PersistentTensor& component = element[1 + component_index];
+    if (component.IsInitialized() && component.NumElements() > 0) {
       return errors::InvalidArgument("Key ", keys_vec(i),
                                      " already has a value for component ",
                                      component_index, " in barrier ", name());
@@ -374,7 +371,7 @@ class Barrier : public ResourceBase {
     // ready queue.
     bool is_complete = true;
     for (int j = 0; is_complete && j < element.size(); ++j) {
-      is_complete = element[j].IsInitialized();
+      is_complete = element[j].IsInitialized() && element[j].NumElements() > 0;
     }
     if (is_complete) {
       // Add tuple to the ready queue. A queue tuple has the index

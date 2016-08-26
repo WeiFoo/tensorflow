@@ -1,3 +1,20 @@
+<!--
+@license
+Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
 <link rel="import" href="../polymer/polymer.html">
 <link rel="import" href="../paper-menu/paper-menu.html">
 <link rel="import" href="../paper-dropdown-menu/paper-dropdown-menu.html">
@@ -244,25 +261,29 @@ span.counter {
       </paper-menu>
     </paper-dropdown-menu>
   </div>
-  <div class="control-holder">
-    <div class="title">Session runs <span class="counter">([[_numSessionRuns(metadataTags)]])</span></div>
-    <paper-dropdown-menu no-label-float no-animations noink class="run-dropdown">
-      <paper-menu id="select" class="dropdown-content" selected="{{selectedMetadataTag}}">
-        <template is="dom-repeat" items="[[metadataTags]]">
-          <paper-item>[[item.tag]]</paper-item>
-        </template>
-        <paper-item>None</paper-item>
-      </paper-menu>
-    </paper-dropdown-menu>
-  </div>
-  <div class="control-holder">
-    <div class="title">Upload</div>
-    <paper-button raised class="text-button upload-button"
-        on-click="_getFile">Choose File</paper-button>
-    <div class="hidden-input">
-      <input type="file" id="file" name="file" on-change="_updateFileInput" />
+  <template is="dom-if" if="[[showSessionRunsDropdown]]">
+    <div class="control-holder">
+      <div class="title">Session runs <span class="counter">([[_numSessionRuns(metadataTags)]])</span></div>
+      <paper-dropdown-menu no-label-float no-animations noink class="run-dropdown">
+        <paper-menu id="select" class="dropdown-content" selected="{{selectedMetadataTag}}">
+          <template is="dom-repeat" items="[[metadataTags]]">
+            <paper-item>[[item.tag]]</paper-item>
+          </template>
+          <paper-item>None</paper-item>
+        </paper-menu>
+      </paper-dropdown-menu>
     </div>
-  </div>
+  </template>
+  <template is="dom-if" if="[[showUploadButton]]">
+    <div class="control-holder">
+      <div class="title">Upload</div>
+      <paper-button raised class="text-button upload-button"
+          on-click="_getFile">Choose File</paper-button>
+      <div class="hidden-input">
+        <input type="file" id="file" name="file" on-change="_updateFileInput" />
+      </div>
+    </div>
+  </template>
   <div class="control-holder">
     <div class="title">
       Trace inputs
@@ -550,6 +571,14 @@ Polymer({
     _currentGradientParams: {
       type: Object,
       computed: '_getCurrentGradientParams(colorByParams, colorBy)'
+    },
+    showSessionRunsDropdown: {
+      type: Boolean,
+      value: true
+    },
+    showUploadButton: {
+      type: Boolean,
+      value: true
     }
   },
   listeners: {
@@ -683,7 +712,7 @@ Polymer({
     }
   },
   _getFile: function() {
-    this.$.file.click();
+    this.$$("#file").click();
   },
   _setDownloadFilename: function(graphPath) {
     // Strip off everything before the last "/" and strip off the file

@@ -382,7 +382,8 @@ def make_tensor_proto(values, dtype=None, shape=None):
   if is_quantized:
     numpy_dtype = dtype
 
-  if dtype is not None and not dtype.base_dtype == numpy_dtype.base_dtype:
+  if dtype is not None and (not hasattr(dtype, "base_dtype") or
+                            dtype.base_dtype != numpy_dtype.base_dtype):
     raise TypeError("Incompatible types: %s vs. %s" % (dtype, nparray.dtype))
 
   # If shape is not given, get the shape from the numpy array.
@@ -593,6 +594,14 @@ def _ConstantValue(tensor):
         return None
       values.append(value)
     return np.concatenate(values, axis=dim)
+  elif tensor.op.type == "Pack":
+    values = []
+    for x in tensor.op.inputs:
+      value = constant_value(x)
+      if value is None:
+        return None
+      values.append(value)
+    return np.array(values)
   else:
     return None
 

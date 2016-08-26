@@ -95,6 +95,7 @@ set(tf_proto_text_srcs
     "tensorflow/core/framework/graph.proto"
     "tensorflow/core/framework/kernel_def.proto"
     "tensorflow/core/framework/log_memory.proto"
+    "tensorflow/core/framework/node_def.proto"
     "tensorflow/core/framework/op_def.proto"
     "tensorflow/core/framework/step_stats.proto"
     "tensorflow/core/framework/summary.proto"
@@ -150,6 +151,7 @@ list(REMOVE_ITEM tf_core_lib_srcs ${tf_core_lib_test_srcs})
 add_library(tf_core_lib OBJECT ${tf_core_lib_srcs})
 target_include_directories(tf_core_lib PUBLIC
     ${tensorflow_source_dir}
+    ${gif_INCLUDE_DIR}
     ${jpeg_INCLUDE_DIR}
     ${png_INCLUDE_DIR}
     ${eigen_INCLUDE_DIRS}
@@ -168,6 +170,7 @@ target_compile_features(tf_core_lib PRIVATE
 )
 
 add_dependencies(tf_core_lib
+    gif_copy_headers_to_destination
     jpeg_copy_headers_to_destination
     png_copy_headers_to_destination
     re2_copy_headers_to_destination

@@ -1,4 +1,3 @@
-# pylint: disable=g-bad-file-header
 # Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +21,9 @@ from __future__ import print_function
 
 import time
 
+from tensorflow.contrib.learn.python.learn import evaluable
 from tensorflow.contrib.learn.python.learn import monitors
+from tensorflow.contrib.learn.python.learn import trainable
 from tensorflow.contrib.learn.python.learn.estimators._sklearn import NotFittedError
 from tensorflow.python.platform import flags
 from tensorflow.python.platform import tf_logging as logging
@@ -48,7 +49,7 @@ class Experiment(object):
     """Constructor for `Experiment`.
 
     Args:
-      estimator: `Estimator` object.
+      estimator: Object implementing `Trainable` and `Evaluable`.
       train_input_fn: function, returns features and targets for training.
       eval_input_fn: function, returns features and targets for evaluation. If
         `eval_steps` is `None`, this should be configured only to produce for a
@@ -68,7 +69,14 @@ class Experiment(object):
       continuous_eval_throttle_secs: Do not re-evaluate unless the last
         evaluation was started at least this many seconds ago for
         continuous_eval().
+
+    Raises:
+      ValueError: if `estimator` does not implement `Evaluable` and `Trainable`.
     """
+    if not isinstance(estimator, evaluable.Evaluable):
+      raise ValueError("`estimator` must implement `Evaluable`.")
+    if not isinstance(estimator, trainable.Trainable):
+      raise ValueError("`estimator` must implement `Trainable`.")
     super(Experiment, self).__init__()
     self._estimator = estimator
     self._train_input_fn = train_input_fn
@@ -81,11 +89,15 @@ class Experiment(object):
     self._eval_delay_secs = eval_delay_secs
     self._continuous_eval_throttle_secs = continuous_eval_throttle_secs
 
+  @property
+  def estimator(self):
+    return self._estimator
+
   def train(self, delay_secs=None):
     """Fit the estimator using the training data.
 
-    Train the estimator for `steps` steps, after waiting for `delay_secs`
-    seconds. If `steps` is `None`, train forever.
+    Train the estimator for `self._train_steps` steps, after waiting for
+    `delay_secs` seconds. If `self._train_steps` is `None`, train forever.
 
     Args:
       delay_secs: Start training after this many seconds.
@@ -93,12 +105,9 @@ class Experiment(object):
     Returns:
       The trained estimator.
     """
-
     if delay_secs is None:
-      task_id = 0
-      if hasattr(FLAGS, "task"):
-        task_id = FLAGS.task
-      delay_secs = min(60, task_id*5)
+      task_id = self._estimator.config.task or 0
+      delay_secs = min(60, task_id * 5)
 
     if delay_secs:
       logging.info("Waiting %d secs before starting training.", delay_secs)
@@ -111,14 +120,15 @@ class Experiment(object):
   def evaluate(self, delay_secs=None):
     """Evaluate on the evaluation data.
 
-    Runs evaluation on the evaluation data and returns the result. If `steps` is
-    given, only run for this many steps. Otherwise run until input is exhausted,
-    or another exception is raised. Start the evaluation after `delay_secs`
-    seconds. If it's None, defaults to using `self._eval_delay_secs` seconds.
+    Runs evaluation on the evaluation data and returns the result. Runs for
+    `self._eval_steps` steps, or if it's `None`, then run until input is
+    exhausted or another exception is raised. Start the evaluation after
+    `delay_secs` seconds, or if it's `None`, defaults to using
+    `self._eval_delay_secs` seconds.
 
     Args:
-      delay_secs: Start evaluating after this many seconds. If None, defaults to
-        using `self._eval_delays_secs`.
+      delay_secs: Start evaluating after this many seconds. If `None`, defaults
+        to using `self._eval_delays_secs`.
 
     Returns:
       The result of the `evaluate` call to the `Estimator`.
@@ -152,22 +162,33 @@ class Experiment(object):
 
   def _continuous_eval(self,
                        input_fn,
-                       name):
+                       name,
+                       delay_secs,
+                       throttle_delay_secs):
     """Run continuous eval.
 
-    Run `steps` steps of evaluation on the evaluation data set. This function
-    starts evaluating after `self._eval_delay_secs` seconds and then runs no
-    more than one evaluation per `self._continuous_eval_throttle_secs`. It
-    never returns.
+    Runs infinite eval on the evaluation data set. This function starts
+    evaluating after `delay_secs` seconds and then runs no more than one
+    evaluation (with `self._eval_steps` steps each time) per
+    `throttle_delay_secs`. It never returns.
 
     Args:
       input_fn: The input to use for this eval.
       name: A string appended to the folder name of evaluation results.
+      delay_secs: Start evaluating after this many seconds. If None, defaults to
+        self._eval_delay_secs.
+      throttle_delay_secs: Do not re-evaluate unless the last evaluation was
+        started at least this many seconds ago. If None, defaults to
+        self._continuous_eval_throttle_secs.
     """
-    if self._eval_delay_secs:
-      logging.info("Waiting %f secs before starting eval.",
-                   self._eval_delay_secs)
-      time.sleep(self._eval_delay_secs)
+    if delay_secs is None:
+      delay_secs = self._eval_delay_secs
+    if throttle_delay_secs is None:
+      throttle_delay_secs = self._continuous_eval_throttle_secs
+
+    if delay_secs:
+      logging.info("Waiting %f secs before starting eval.", delay_secs)
+      time.sleep(delay_secs)
 
     while True:
       start = time.time()
@@ -179,16 +200,37 @@ class Experiment(object):
       except NotFittedError:
         logging.warning("Estimator is not fitted yet, skipping evaluation.")
       duration = time.time() - start
-      if duration < self._continuous_eval_throttle_secs:
-        difference = self._continuous_eval_throttle_secs - duration
+      if duration < throttle_delay_secs:
+        difference = throttle_delay_secs - duration
         logging.info("Waiting %f secs before starting next eval run.",
                      difference)
         time.sleep(difference)
 
-  def continuous_eval(self):
+  def continuous_eval(self, delay_secs=None, throttle_delay_secs=None):
     self._continuous_eval(self._eval_input_fn,
-                          name="continuous")
+                          name="continuous",
+                          delay_secs=delay_secs,
+                          throttle_delay_secs=throttle_delay_secs)
 
-  def continuous_eval_on_train_data(self):
+  def continuous_eval_on_train_data(self,
+                                    delay_secs=None,
+                                    throttle_delay_secs=None):
     self._continuous_eval(self._train_input_fn,
-                          name="continuous_on_train_data")
+                          name="continuous_on_train_data",
+                          delay_secs=delay_secs,
+                          throttle_delay_secs=throttle_delay_secs)
+
+  def test(self):
+    """Tests training and evaluating the estimator both for a single step.
+
+    Returns:
+      The result of the `evaluate` call to the `Estimator`.
+    """
+    self._estimator.fit(input_fn=self._train_input_fn,
+                        steps=1,
+                        monitors=self._train_monitors)
+
+    return self._estimator.evaluate(input_fn=self._eval_input_fn,
+                                    steps=1,
+                                    metrics=self._eval_metrics,
+                                    name="one_pass")

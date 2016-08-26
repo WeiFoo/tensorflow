@@ -27,7 +27,7 @@ class BaseInMemorySource(transform.Transform):
 
   def __init__(self,
                data,
-               num_threads=1,
+               num_threads=None,
                enqueue_size=None,
                batch_size=None,
                queue_capacity=None,
@@ -89,14 +89,16 @@ class BaseInMemorySource(transform.Transform):
   def input_valency(self):
     return 0
 
-  def _apply_transform(self, transform_input):
+  def _apply_transform(self, transform_input, **kwargs):
     queue = feeding_functions.enqueue_data(self.data,
                                            self.queue_capacity,
                                            self.shuffle,
                                            self.min_after_dequeue,
+                                           num_threads=self.num_threads,
                                            seed=self.seed,
                                            name=self.data_name,
-                                           enqueue_size=self.enqueue_size)
+                                           enqueue_size=self.enqueue_size,
+                                           num_epochs=kwargs.get("num_epochs"))
 
     dequeued = queue.dequeue_many(self.batch_size)
 

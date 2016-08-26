@@ -215,6 +215,7 @@ class UnaryOpTest(tf.test.TestCase):
     self._compareBothSparse(z, np.sqrt, tf.sqrt, tol=1e-3)
     self._compareBothSparse(x, np.tanh, tf.tanh)
     self._compareBothSparse(y, np.sign, tf.sign)
+    self._compareBothSparse(x, np.vectorize(math.erf), tf.erf)
 
   def testFloatTanhEdge(self):
     x = np.arange(40, 40 + 6).reshape(6).astype(np.float32)
@@ -254,6 +255,7 @@ class UnaryOpTest(tf.test.TestCase):
     self._compareBothSparse(x, np.sqrt, tf.sqrt, tol=1e-3)
     self._compareBothSparse(x, np.tanh, tf.tanh)
     self._compareBothSparse(x, np.sign, tf.sign)
+    self._compareBothSparse(x, np.sign, tf.erf)
 
   def testDoubleBasic(self):
     x = np.arange(-3, 3).reshape(1, 3, 2).astype(np.float64)
@@ -292,6 +294,7 @@ class UnaryOpTest(tf.test.TestCase):
     self._compareBothSparse(z, np.sqrt, tf.sqrt, tol=1e-3)
     self._compareBothSparse(x, np.tanh, tf.tanh)
     self._compareBothSparse(y, np.sign, tf.sign)
+    self._compareBothSparse(x, np.vectorize(math.erf), tf.erf)
 
   def testHalfBasic(self):
     x = np.arange(-3, 3).reshape(1, 3, 2).astype(np.float16)
@@ -325,6 +328,7 @@ class UnaryOpTest(tf.test.TestCase):
     self._compareBothSparse(z, np.sqrt, tf.sqrt, tol=1e-3)
     self._compareBothSparse(x, np.tanh, tf.tanh)
     self._compareBothSparse(y, np.sign, tf.sign)
+    self._compareBothSparse(x, np.vectorize(math.erf), tf.erf, tol=1e-3)
 
   def testInt32Basic(self):
     x = np.arange(-6, 6, 2).reshape(1, 3, 2).astype(np.int32)
@@ -985,6 +989,15 @@ class BinaryOpTest(tf.test.TestCase):
           ValueError, lambda e: "Incompatible shapes" in str(e)):
         func(tf.convert_to_tensor([10.0, 20.0, 30.0]),
              tf.convert_to_tensor([[40.0, 50.0], [60.0, 70.0]]))
+
+  def testZeroPowGrad(self):
+    with self.test_session():
+      for dtype in np.float16, np.float32, np.float64:
+        x = tf.constant(0.0, dtype=dtype)
+        y = tf.constant(2.0, dtype=dtype)
+        z = tf.pow(x, y)
+        error = tf.test.compute_gradient_error(y, [], z, [])
+        self.assertEqual(error, 0)
 
 
 class ComparisonOpTest(tf.test.TestCase):

@@ -75,7 +75,7 @@ resized_image = tf.image.resize_images(image, 299, 299)
 
 @@crop_and_resize
 
-## Flipping and Transposing
+## Flipping, Rotating and Transposing
 
 @@flip_up_down
 @@random_flip_up_down
@@ -84,6 +84,8 @@ resized_image = tf.image.resize_images(image, 299, 299)
 @@random_flip_left_right
 
 @@transpose_image
+
+@@rot90
 
 ## Converting Between Colorspaces.
 
@@ -104,7 +106,7 @@ Internally, images are either stored in as one `float32` per channel per pixel
 (implicitly, values are assumed to lie in `[0,1)`) or one `uint8` per channel
 per pixel (values are assumed to lie in `[0,255]`).
 
-Tensorflow can convert between images in RGB or HSV. The conversion functions
+TensorFlow can convert between images in RGB or HSV. The conversion functions
 work only on float images, so you need to convert images in other formats using
 [`convert_image_dtype`](#convert-image-dtype).
 
@@ -153,6 +155,7 @@ type and representation (RGB or HSV).
 ## Working with Bounding Boxes
 
 @@draw_bounding_boxes
+@@non_max_suppression
 @@sample_distorted_bounding_box
 """
 from __future__ import absolute_import
@@ -165,14 +168,15 @@ from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import check_ops
 from tensorflow.python.ops import clip_ops
+from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import gen_image_ops
 from tensorflow.python.ops import gen_nn_ops
+from tensorflow.python.ops import logging_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
-from tensorflow.python.ops import logging_ops
-from tensorflow.python.ops import control_flow_ops
-from tensorflow.python.ops import check_ops
+from tensorflow.python.ops import variables
 
 # go/tf-wildcard-import
 # pylint: disable=wildcard-import
@@ -180,8 +184,6 @@ from tensorflow.python.ops.gen_image_ops import *
 # pylint: enable=wildcard-import
 
 from tensorflow.python.util.all_util import make_all
-from tensorflow.contrib.framework.python.framework import is_tensor
-
 
 
 ops.NoGradient('RandomCrop')
@@ -190,7 +192,8 @@ ops.NoGradient('HSVToRGB')
 ops.NoGradient('DrawBoundingBoxes')
 ops.NoGradient('SampleDistortedBoundingBox')
 # TODO(bsteiner): Implement the gradient function for extract_glimpse
-ops.NoGradient("ExtractGlimpse")
+ops.NoGradient('ExtractGlimpse')
+ops.NoGradient('NonMaxSuppression')
 
 
 def _assert(cond, ex_type, msg):
@@ -208,13 +211,25 @@ def _assert(cond, ex_type, msg):
   Returns:
     A list, containing at most one assert op.
   """
-  if is_tensor(cond):
+  if _is_tensor(cond):
     return [logging_ops.Assert(cond, [msg])]
   else:
     if not cond:
       raise ex_type(msg)
     else:
       return []
+
+
+def _is_tensor(x):
+  """Returns `True` if `x` is a symbolic tensor-like object.
+
+  Args:
+    x: A python object to check.
+
+  Returns:
+    `True` if `x` is a `tf.Tensor` or `tf.Variable`, otherwise `False`.
+  """
+  return isinstance(x, (ops.Tensor, variables.Variable))
 
 
 def _ImageDimensions(images, static_only=True):
@@ -383,6 +398,33 @@ def flip_up_down(image):
   return array_ops.reverse(image, [True, False, False])
 
 
+def rot90(image, k=1):
+  """Rotate an image counter-clockwise by 90 degrees.
+
+  Args:
+    image: A 3-D tensor of shape `[height, width, channels].`
+    k: Number of times the image is rotated by 90 degrees.
+
+  Returns:
+    A rotated 3-D tensor of the same type and shape as `image`.
+  """
+  image = ops.convert_to_tensor(image, name='image')
+  _Check3DImage(image, require_static=False)
+  k %= 4
+  if k == 0:
+    return image
+  elif k == 1:
+    return array_ops.transpose(
+        array_ops.reverse(image, [False, True, False]),
+        [1, 0, 2], name='rot90')
+  elif k == 2:
+    return array_ops.reverse(image, [True, True, False], name='rot90')
+  elif k == 3:
+    return array_ops.reverse(
+        array_ops.transpose(image, [1, 0, 2], name='rot90'),
+        [False, True, False])
+
+
 def transpose_image(image):
   """Transpose an image by swapping the first and second dimension.
 
@@ -504,7 +546,7 @@ def pad_to_bounding_box(image, offset_height, offset_width, target_height,
     [3, 2])
   padded = array_ops.pad(image, paddings)
 
-  padded_shape = [None if is_tensor(i) else i
+  padded_shape = [None if _is_tensor(i) else i
                   for i in [target_height, target_width, depth]]
   padded.set_shape(padded_shape)
 
@@ -563,7 +605,7 @@ def crop_to_bounding_box(image, offset_height, offset_width, target_height,
     array_ops.pack([offset_height, offset_width, 0]),
     array_ops.pack([target_height, target_width, -1]))
 
-  cropped_shape = [None if is_tensor(i) else i
+  cropped_shape = [None if _is_tensor(i) else i
                    for i in [target_height, target_width, depth]]
   cropped.set_shape(cropped_shape)
 
@@ -606,26 +648,26 @@ def resize_image_with_crop_or_pad(image, target_height, target_width):
   image = control_flow_ops.with_dependencies(assert_ops, image)
   # `crop_to_bounding_box` and `pad_to_bounding_box` have their own checks.
   # Make sure our checks come first, so that error messages are clearer.
-  if is_tensor(target_height):
+  if _is_tensor(target_height):
     target_height = control_flow_ops.with_dependencies(
       assert_ops, target_height)
-  if is_tensor(target_width):
+  if _is_tensor(target_width):
     target_width = control_flow_ops.with_dependencies(assert_ops, target_width)
 
   def max_(x, y):
-    if is_tensor(x) or is_tensor(y):
+    if _is_tensor(x) or _is_tensor(y):
       return math_ops.maximum(x, y)
     else:
       return max(x, y)
 
   def min_(x, y):
-    if is_tensor(x) or is_tensor(y):
+    if _is_tensor(x) or _is_tensor(y):
       return math_ops.minimum(x, y)
     else:
       return min(x, y)
 
   def equal_(x, y):
-    if is_tensor(x) or is_tensor(y):
+    if _is_tensor(x) or _is_tensor(y):
       return math_ops.equal(x, y)
     else:
       return x == y
@@ -816,8 +858,7 @@ def per_image_whitening(image):
   stddev = math_ops.sqrt(variance)
 
   # Apply a minimum normalization that protects us against uniform images.
-  min_stddev = math_ops.inv(
-      math_ops.sqrt(math_ops.cast(num_pixels, dtypes.float32)))
+  min_stddev = math_ops.rsqrt(math_ops.cast(num_pixels, dtypes.float32))
   pixel_value_scale = math_ops.maximum(stddev, min_stddev)
   pixel_value_offset = image_mean
 
@@ -904,7 +945,7 @@ def adjust_brightness(image, delta):
   Returns:
     A brightness-adjusted tensor of the same shape and type as `image`.
   """
-  with ops.op_scope([image, delta], None, 'adjust_brightness') as name:
+  with ops.name_scope(None, 'adjust_brightness', [image, delta]) as name:
     image = ops.convert_to_tensor(image, name='image')
     # Remember original dtype to so we can convert back if needed
     orig_dtype = image.dtype
@@ -942,7 +983,8 @@ def adjust_contrast(images, contrast_factor):
   Returns:
     The contrast-adjusted image or images.
   """
-  with ops.op_scope([images, contrast_factor], None, 'adjust_contrast') as name:
+  with ops.name_scope(None, 'adjust_contrast',
+                      [images, contrast_factor]) as name:
     images = ops.convert_to_tensor(images, name='images')
     # Remember original dtype to so we can convert back if needed
     orig_dtype = images.dtype
@@ -991,6 +1033,12 @@ def _ResizeShape(op):
   return [tensor_shape.TensorShape(
       [input_shape[0], height, width, input_shape[3]])]
 
+@ops.RegisterShape('DecodeGif')
+def _ImageDecodeShape(op):
+  """Shape function for decode gif."""
+  unused_input_shape = op.inputs[0].get_shape().merge_with(
+      tensor_shape.scalar())
+  return [tensor_shape.TensorShape([None, None, None, 3])]
 
 @ops.RegisterShape('DecodeJpeg')
 @ops.RegisterShape('DecodePng')
@@ -1042,7 +1090,7 @@ def convert_image_dtype(image, dtype, saturate=False, name=None):
   if dtype == image.dtype:
     return array_ops.identity(image, name=name)
 
-  with ops.op_scope([image], name, 'convert_image') as name:
+  with ops.name_scope(name, 'convert_image', [image]) as name:
     # Both integer: use integer multiplication in the larger range
     if image.dtype.is_integer and dtype.is_integer:
       scale_in = image.dtype.max
@@ -1103,7 +1151,7 @@ def rgb_to_grayscale(images, name=None):
   Returns:
     The converted grayscale image(s).
   """
-  with ops.op_scope([images], name, 'rgb_to_grayscale') as name:
+  with ops.name_scope(name, 'rgb_to_grayscale', [images]) as name:
     images = ops.convert_to_tensor(images, name='images')
     # Remember original dtype to so we can convert back if needed
     orig_dtype = images.dtype
@@ -1133,7 +1181,7 @@ def grayscale_to_rgb(images, name=None):
   Returns:
     The converted grayscale image(s).
   """
-  with ops.op_scope([images], name, 'grayscale_to_rgb') as name:
+  with ops.name_scope(name, 'grayscale_to_rgb', [images]) as name:
     images = ops.convert_to_tensor(images, name='images')
     rank_1 = array_ops.expand_dims(array_ops.rank(images) - 1, 0)
     shape_list = (
@@ -1212,7 +1260,7 @@ def adjust_hue(image, delta, name=None):
   Returns:
     Adjusted image(s), same shape and DType as `image`.
   """
-  with ops.op_scope([image], name, 'adjust_hue') as name:
+  with ops.name_scope(name, 'adjust_hue', [image]) as name:
     image = ops.convert_to_tensor(image, name='image')
     # Remember original dtype to so we can convert back if needed
     orig_dtype = image.dtype
@@ -1287,7 +1335,7 @@ def adjust_saturation(image, saturation_factor, name=None):
   Returns:
     Adjusted image(s), same shape and DType as `image`.
   """
-  with ops.op_scope([image], name, 'adjust_saturation') as name:
+  with ops.name_scope(name, 'adjust_saturation', [image]) as name:
     image = ops.convert_to_tensor(image, name='image')
     # Remember original dtype to so we can convert back if needed
     orig_dtype = image.dtype
@@ -1363,6 +1411,12 @@ def _crop_and_resize_shape(op):
     crop_width = None
   return [tensor_shape.TensorShape(
       [box_shape[0], crop_height, crop_width, image_shape[3]])]
+
+
+@ops.RegisterShape('NonMaxSuppression')
+def _non_max_suppression_shape(_):
+  """Shape function for the NonMaxSuppression op."""
+  return [tensor_shape.TensorShape([None])]
 
 
 __all__ = make_all(__name__)

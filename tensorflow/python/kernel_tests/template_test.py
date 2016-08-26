@@ -105,6 +105,26 @@ class TemplateTest(tf.test.TestCase):
     self.assertEqual("s1/dummy:0", v1.name)
     self.assertEqual("s1_1/dummy:0", v3.name)
 
+  def test_unique_name_raise_error(self):
+    tmpl1 = template.make_template("_", var_scoped_function, unique_name_="s1")
+    tmpl1()
+    tmpl2 = template.make_template("_", var_scoped_function, unique_name_="s1")
+    with self.assertRaises(ValueError):
+      tmpl2()
+
+  def test_unique_name_and_reuse(self):
+    tmpl1 = template.make_template("_", var_scoped_function, unique_name_="s1")
+    v1 = tmpl1()
+    v2 = tmpl1()
+
+    tf.get_variable_scope().reuse_variables()
+    tmpl2 = template.make_template("_", var_scoped_function, unique_name_="s1")
+    v3 = tmpl2()
+
+    self.assertEqual(v1, v2)
+    self.assertEqual(v1, v3)
+    self.assertEqual("s1/dummy:0", v1.name)
+
   def test_template_in_scope(self):
     tmpl1 = template.make_template("s1", var_scoped_function)
     tmpl2 = template.make_template("s1", var_scoped_function)
@@ -231,7 +251,7 @@ class TemplateTest(tf.test.TestCase):
   def test_scope_access(self):
     # Ensure that we can access the scope inside the template, because the name
     # of that scope may be different from the name we pass to make_template, due
-    # to having been made unique by variable_op_scope.
+    # to having been made unique by variable_scope.
     with tf.variable_scope("foo"):
       # Create two templates with the same name, ensure scopes are made unique.
       ta = template.make_template("bar", var_scoped_function, True)

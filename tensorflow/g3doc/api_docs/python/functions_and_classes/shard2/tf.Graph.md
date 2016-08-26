@@ -347,6 +347,12 @@ with g.name_scope('my_layer') as scope:
   output = tf.nn.relu(affine, name=scope)
 ```
 
+NOTE: This constructor validates the given `name`. Valid scope
+names match one of the following regular expressions:
+
+    [A-Za-z0-9.][A-Za-z0-9_.\\-/]* (for scopes at the root)
+    [A-Za-z0-9_.\\-/]* (for other scopes)
+
 ##### Args:
 
 
@@ -355,6 +361,11 @@ with g.name_scope('my_layer') as scope:
 ##### Returns:
 
   A context manager that installs `name` as a new name scope.
+
+##### Raises:
+
+
+*  <b>`ValueError`</b>: If `name` is not a valid scope name. The rules are the
 
 
 
@@ -796,7 +807,7 @@ with g.container('experiment0'):
     q3 = tf.FIFOQueue(30, tf.float32)
 
 # Resets container "experiment0", after which the state of v1, v2, v4, q1
-# will become undefined (such as unitialized).
+# will become undefined (such as uninitialized).
 tf.Session.reset(target, ["experiment0"])
 ```
 

@@ -24,6 +24,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
+#include "tensorflow/core/platform/file_statistics.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/types.h"
@@ -60,6 +61,8 @@ class FileSystem {
   virtual Status GetChildren(const string& dir,
                              std::vector<string>* result) = 0;
 
+  virtual Status Stat(const string& fname, FileStatistics* stat) = 0;
+
   virtual Status DeleteFile(const string& fname) = 0;
 
   virtual Status CreateDir(const string& dirname) = 0;
@@ -73,6 +76,15 @@ class FileSystem {
   // Translate an URI to a filename usable by the FileSystem implementation. The
   // implementation in this class returns the name as-is.
   virtual string TranslateName(const string& name) const;
+
+  // Returns whether the given path is a directory or not.
+  // Typical return codes (not guaranteed exhaustive):
+  //  * OK - The path exists and is a directory.
+  //  * FAILED_PRECONDITION - The path exists and is not a directory.
+  //  * NOT_FOUND - The path entry does not exist.
+  //  * PERMISSION_DENIED - Insufficient permissions.
+  //  * UNIMPLEMENTED - The file factory doesn't support directories.
+  virtual Status IsDirectory(const string& fname);
 };
 
 // Degenerate file system that provides no implementations.
@@ -128,6 +140,10 @@ class NullFileSystem : public FileSystem {
 
   Status RenameFile(const string& src, const string& target) override {
     return errors::Unimplemented("RenameFile unimplemented");
+  }
+
+  Status Stat(const string& fname, FileStatistics* stat) override {
+    return errors::Unimplemented("Stat unimplemented");
   }
 };
 

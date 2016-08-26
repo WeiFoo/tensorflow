@@ -51,9 +51,15 @@ cc_library(
 
 cc_library(
     name = "worker_interface",
-    hdrs = ["worker_interface.h"],
+    srcs = ["tensor_coding.cc"],
+    hdrs = [
+        "tensor_coding.h",
+        "worker_interface.h",
+    ],
     deps = [
         ":call_options",
+        "//tensorflow/core:core_cpu_internal",
+        "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:worker_proto_cc",
     ],
@@ -76,6 +82,23 @@ cc_test(
         ":call_options",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+    ],
+)
+
+cc_test(
+    name = "tensor_coding_test",
+    size = "small",
+    srcs = ["tensor_coding_test.cc"],
+    linkstatic = 1,
+    deps = [
+        ":worker_interface",
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:tensor_testutil",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:worker_proto_cc",
     ],
 )
 
@@ -122,6 +145,7 @@ cc_library(
         "//tensorflow/core:core_cpu_internal",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
+        "//tensorflow/core:lib_internal",
         "//tensorflow/core:master_proto_cc",
         "//tensorflow/core:worker_proto_cc",
     ],

@@ -1,4 +1,4 @@
-# Copyright 2016 Google Inc. All Rights Reserved.
+# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,24 +29,19 @@ from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import random_ops
 
 
-class Categorical(distribution.DiscreteDistribution):
+class Categorical(distribution.Distribution):
   """Categorical distribution.
 
   The categorical distribution is parameterized by the log-probabilities
   of a set of classes.
-
-  Note, the following methods of the base class aren't implemented:
-    * mean
-    * cdf
-    * log_cdf
   """
 
   def __init__(
       self,
       logits,
       dtype=dtypes.int32,
-      strict=True,
-      strict_statistics=True,
+      validate_args=True,
+      allow_nan_stats=False,
       name="Categorical"):
     """Initialize Categorical distributions using class log-probabilities.
 
@@ -56,34 +51,47 @@ class Categorical(distribution.DiscreteDistribution):
           index into a batch of independent distributions and the last dimension
           indexes into the classes.
       dtype: The type of the event samples (default: int32).
-      strict: Unused in this distribution.
-      strict_statistics:  Boolean, default True.  If True, raise an exception if
-        a statistic (e.g. mean/mode/etc...) is undefined for any batch member.
-        If False, batch members with valid parameters leading to undefined
-        statistics will return NaN for this statistic.
+      validate_args: Unused in this distribution.
+      allow_nan_stats:  Boolean, default `False`.  If `False`, raise an
+        exception if a statistic (e.g. mean/mode/etc...) is undefined for any
+        batch member.  If `True`, batch members with valid parameters leading to
+        undefined statistics will return NaN for this statistic.
       name: A name for this distribution (optional).
     """
-    self._strict_statistics = strict_statistics
+    self._allow_nan_stats = allow_nan_stats
     self._name = name
     self._dtype = dtype
-    self._strict = strict
-    with ops.op_scope([logits], name):
+    self._validate_args = validate_args
+    with ops.name_scope(name, values=[logits]):
       self._logits = ops.convert_to_tensor(logits, name="logits")
-      logits_shape = array_ops.shape(self._logits)
-      self._batch_rank = array_ops.size(logits_shape) - 1
-      self._batch_shape = array_ops.slice(
-          logits_shape, [0], array_ops.pack([self._batch_rank]))
-      self._num_classes = array_ops.gather(logits_shape, self._batch_rank)
+      logits_shape = array_ops.shape(self._logits, name="logits_shape")
+      static_logits_shape = self._logits.get_shape().with_rank_at_least(1)
+      static_logits_rank = static_logits_shape.ndims
+      if static_logits_rank is not None:
+        self._batch_rank = ops.convert_to_tensor(
+            static_logits_rank - 1, dtype=dtypes.int32,
+            name="batch_rank")
+      else:
+        self._batch_rank = array_ops.rank(self._logits) - 1
+
+      if static_logits_shape[-1].value is not None:
+        self._num_classes = ops.convert_to_tensor(
+            static_logits_shape[-1].value,
+            dtype=dtypes.int32, name="num_classes")
+      else:
+        self._num_classes = array_ops.gather(logits_shape, self._batch_rank)
+
+      self._batch_shape = logits_shape[:-1]
 
   @property
-  def strict_statistics(self):
+  def allow_nan_stats(self):
     """Boolean describing behavior when a stat is undefined for batch member."""
-    return self._strict_statistics
+    return self._allow_nan_stats
 
   @property
-  def strict(self):
+  def validate_args(self):
     """Boolean describing behavior on invalid input."""
-    return self._strict
+    return self._validate_args
 
   @property
   def name(self):
@@ -113,47 +121,57 @@ class Categorical(distribution.DiscreteDistribution):
 
   @property
   def num_classes(self):
+    """Scalar `int32` tensor: the number of classes."""
     return self._num_classes
 
   @property
   def logits(self):
     return self._logits
 
-  def log_pmf(self, k, name="log_pmf"):
+  def log_prob(self, k, name="log_prob"):
     """Log-probability of class `k`.
 
     Args:
-      k: `int32` or `int64` Tensor with shape = `self.batch_shape()`.
+      k: `int32` or `int64` Tensor. Must be broadcastable with a `batch_shape`
+        `Tensor`.
       name: A name for this operation (optional).
 
     Returns:
       The log-probabilities of the classes indexed by `k`
     """
     with ops.name_scope(self.name):
-      k = ops.convert_to_tensor(k, name="k")
-      k.set_shape(self.get_batch_shape())
-      return -nn_ops.sparse_softmax_cross_entropy_with_logits(
-          self.logits, k, name=name)
+      with ops.name_scope(name, values=[k, self.logits]):
+        k = ops.convert_to_tensor(k, name="k")
 
-  def pmf(self, k, name="pmf"):
+        logits = self.logits * array_ops.ones_like(
+            array_ops.expand_dims(k, -1),
+            dtype=self.logits.dtype)
+        k *= array_ops.ones(
+            array_ops.slice(
+                array_ops.shape(logits), [0], [array_ops.rank(logits) - 1]),
+            dtype=k.dtype)
+        k.set_shape(tensor_shape.TensorShape(logits.get_shape()[:-1]))
+
+        return -nn_ops.sparse_softmax_cross_entropy_with_logits(logits, k)
+
+  def prob(self, k, name="prob"):
     """Probability of class `k`.
 
     Args:
-      k: `int32` or `int64` Tensor with shape = `self.batch_shape()`.
+      k: `int32` or `int64` Tensor. Must be broadcastable with logits.
       name: A name for this operation (optional).
 
     Returns:
       The probabilities of the classes indexed by `k`
     """
-    with ops.name_scope(self.name):
-      with ops.op_scope([self.logits, k], name):
-        return math_ops.exp(self.log_pmf(k))
+    return super(Categorical, self).prob(k, name)
 
-  def sample(self, n, seed=None, name="sample"):
+  def sample_n(self, n, seed=None, name="sample_n"):
     """Sample `n` observations from the Categorical distribution.
 
     Args:
-      n: 0-D.  Number of independent samples to draw for each distribution.
+      n: `Scalar` `Tensor` of type `int32` or `int64`, the number of
+        observations to sample.
       seed: Random seed (optional).
       name: A name for this operation (optional).
 
@@ -161,7 +179,7 @@ class Categorical(distribution.DiscreteDistribution):
       An `int64` `Tensor` with shape `[n, batch_shape, event_shape]`
     """
     with ops.name_scope(self.name):
-      with ops.op_scope([self.logits, n], name):
+      with ops.name_scope(name, values=[self.logits, n]):
         n = ops.convert_to_tensor(n, name="n")
         logits_2d = array_ops.reshape(
             self.logits, array_ops.pack([-1, self.num_classes]))
@@ -169,15 +187,14 @@ class Categorical(distribution.DiscreteDistribution):
         samples = math_ops.cast(samples, self._dtype)
         ret = array_ops.reshape(
             array_ops.transpose(samples),
-            array_ops.concat(
-                0, [array_ops.expand_dims(n, 0), self.batch_shape()]))
+            array_ops.concat(0, ([n], self.batch_shape())))
         ret.set_shape(tensor_shape.vector(tensor_util.constant_value(n))
                       .concatenate(self.get_batch_shape()))
         return ret
 
   def entropy(self, name="sample"):
     with ops.name_scope(self.name):
-      with ops.op_scope([], name):
+      with ops.name_scope(name):
         logits_2d = array_ops.reshape(
             self.logits, array_ops.pack([-1, self.num_classes]))
         histogram_2d = nn_ops.softmax(logits_2d)
@@ -189,8 +206,12 @@ class Categorical(distribution.DiscreteDistribution):
 
   def mode(self, name="mode"):
     with ops.name_scope(self.name):
-      with ops.op_scope([], name):
+      with ops.name_scope(name):
         ret = math_ops.argmax(self.logits, dimension=self._batch_rank)
         ret = math_ops.cast(ret, self._dtype)
         ret.set_shape(self.get_batch_shape())
         return ret
+
+  @property
+  def is_continuous(self):
+    return False
